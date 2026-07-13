@@ -54,6 +54,8 @@
     try {
       const html = await window.render(editor.value);
       reading.innerHTML = html;
+      // [~] task markers render as indeterminate (partial) checkboxes.
+      reading.querySelectorAll("input.task-partial").forEach((c) => { c.indeterminate = true; });
       lastRenderedHtml = html;
     } catch (e) {
       reading.innerHTML =
@@ -343,7 +345,9 @@
   btnRedo.addEventListener("click", doRedo);
 
   for (const b of document.querySelectorAll(".viewmodes button")) {
-    b.addEventListener("click", () => setView(b.getAttribute("data-view")));
+    // Recenter the divider on any mode click, so a divider dragged to an edge is
+    // always recoverable just by clicking a view button.
+    b.addEventListener("click", () => { splitRatio = 0.5; setView(b.getAttribute("data-view")); });
   }
 
   /* ---- Editor events --------------------------------------------------- */

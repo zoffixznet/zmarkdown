@@ -8,7 +8,34 @@
 ## inline error block plus the escaped source, so a bad document degrades to
 ## readable text instead of taking down the preview.
 
+import std/strutils
 import pkg/markdown as md
+
+func taskBox(kind: string): string =
+  ## A read-only checkbox for a task list item. The preview is read-only (editing
+  ## happens in the raw pane), so the box is disabled.
+  case kind
+  of "checked": """<input type="checkbox" checked disabled> """
+  of "partial": """<input type="checkbox" class="task-partial" disabled> """
+  else: """<input type="checkbox" disabled> """
+
+func convertTaskItems*(html: string): string =
+  ## Turn task-list markers at the start of a list item into read-only checkboxes.
+  ## The markdown library renders `- [x] foo` literally as `<li>[x] foo`, so we
+  ## detect that (tight lists) and the loose `<li>\n<p>[x] ` form. Markers:
+  ## `[ ]` unchecked, `[x]`/`[X]` done, and `[~]` shown as an indeterminate
+  ## (partial / in progress) box. `[~]` is not a standard marker; it is a
+  ## convention some generated documents use, rendered here as a partial state.
+  html.multiReplace(
+    ("<li>[ ] ", "<li class=\"task\">" & taskBox("")),
+    ("<li>[x] ", "<li class=\"task\">" & taskBox("checked")),
+    ("<li>[X] ", "<li class=\"task\">" & taskBox("checked")),
+    ("<li>[~] ", "<li class=\"task\">" & taskBox("partial")),
+    ("<li>\n<p>[ ] ", "<li class=\"task\">\n<p>" & taskBox("")),
+    ("<li>\n<p>[x] ", "<li class=\"task\">\n<p>" & taskBox("checked")),
+    ("<li>\n<p>[X] ", "<li class=\"task\">\n<p>" & taskBox("checked")),
+    ("<li>\n<p>[~] ", "<li class=\"task\">\n<p>" & taskBox("partial")),
+  )
 
 func escapeHtml(s: string): string =
   ## Minimal HTML escaping for the fallback path.
@@ -26,7 +53,7 @@ proc renderMarkdown*(source: string): string =
   ## error notice followed by the source as preformatted text so the preview
   ## still shows something useful.
   try:
-    result = md.markdown(source, config = md.initGfmConfig())
+    result = convertTaskItems(md.markdown(source, config = md.initGfmConfig()))
   except CatchableError as e:
     result = "<div class=\"render-error\">Could not render markdown: " &
       escapeHtml(e.msg) & "</div>\n<pre class=\"render-fallback\">" &
@@ -36,7 +63,7 @@ proc renderOutcome*(source: string): tuple[html: string, ok: bool, error: string
   ## Like renderMarkdown but also reports whether rendering succeeded, for
   ## callers (tests, logging) that want to know.
   try:
-    let html = md.markdown(source, config = md.initGfmConfig())
+    let html = convertTaskItems(md.markdown(source, config = md.initGfmConfig()))
     (html, true, "")
   except CatchableError as e:
     let fallback = "<div class=\"render-error\">Could not render markdown: " &

@@ -458,6 +458,14 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
 .reading ul, .reading ol { margin: 0 0 1.1em; padding-left: 1.5em; }
 .reading li { margin: 0.3em 0; }
 .reading li::marker { color: var(--accent); }
+/* Task list items: no bullet, a read-only checkbox pulled to the left margin. */
+.reading li.task { list-style: none; margin-left: -1.35em; }
+.reading li.task input[type="checkbox"] {
+  margin-right: 0.5em;
+  vertical-align: -0.04em;
+  accent-color: var(--accent);
+  cursor: default;
+}
 .reading ul ul, .reading ol ol, .reading ul ol, .reading ol ul { margin-bottom: 0; }
 
 /* Tables: hairline row rules, ruled header, padded cells. */
