@@ -334,6 +334,49 @@
     }
   }
 
+  /* ---- Drag and drop a file to open it --------------------------------- */
+
+  function pathFromDrop(dt) {
+    let uri = "";
+    try { uri = dt.getData("text/uri-list") || ""; } catch (e) {}
+    if (!uri) { try { uri = dt.getData("text/plain") || ""; } catch (e) {} }
+    // A uri-list may hold several lines and comments (#); take the first real one.
+    const line = uri.split(/[\r\n]+/).map((s) => s.trim()).find((s) => s && !s.startsWith("#"));
+    return line || "";
+  }
+
+  function fileUrlToPath(uri) {
+    if (!uri || !/^file:\/\//i.test(uri)) return "";
+    let p = uri.replace(/^file:\/\//i, "");
+    try { p = decodeURIComponent(p); } catch (e) {}
+    if (/^\/[A-Za-z]:[\/\\]/.test(p)) p = p.slice(1); // Windows: /C:/... -> C:/...
+    return p;
+  }
+
+  document.addEventListener("dragover", (ev) => {
+    // Take over file drags only; leave text drags to insert into the editor.
+    if (ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files")) ev.preventDefault();
+  });
+  document.addEventListener("drop", async (ev) => {
+    const dt = ev.dataTransfer;
+    if (!dt) return;
+    const isFile = Array.from(dt.types || []).includes("Files") || (dt.files && dt.files.length);
+    if (!isFile) return; // a text drop inserts as usual
+    ev.preventDefault();
+    const path = fileUrlToPath(pathFromDrop(dt));
+    if (!path) { log("drop: could not read a file path"); return; }
+    try {
+      const res = await window.openPath(dirty, editor.value, path);
+      if (res && res.opened) {
+        editor.value = res.text;
+        setTitle(res.title, false);
+        await doRender();
+        await resetHistory(editor.value);
+        editor.focus();
+      }
+    } catch (e) { log("drop open failed: " + e); }
+  });
+
   /* ---- Toolbar buttons ------------------------------------------------- */
 
   $("btn-bold").addEventListener("click", () => runEdit("bold"));

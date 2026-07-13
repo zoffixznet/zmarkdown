@@ -356,6 +356,25 @@ proc jsMenuNew(id: string; req: JsonNode): string =
   logLine("new document")
   $ %*{"ok": true, "title": docName()}
 
+proc jsOpenPath(id: string; req: JsonNode): string =
+  ## openPath(dirty, currentText, path) -> {opened, text, title}. Opens a specific
+  ## file (from a drag-and-drop) through the same guard and read path as Open.
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let curText = if req.len > 1: req[1].getStr() else: ""
+  let path = if req.len > 2 and req[2].kind == JString: req[2].getStr() else: ""
+  if path.len == 0:
+    return $ %*{"opened": false}
+  if not guardUnsaved(dirty, curText):
+    return $ %*{"opened": false}
+  let r = readTextFile(path)
+  if not r.ok:
+    logLine("open (drop) failed: " & r.error)
+    errorDialog("Open failed", r.error)
+    return $ %*{"opened": false}
+  app.currentPath = path
+  logLine("opened (drop) " & path)
+  $ %*{"opened": true, "text": r.value, "title": docName()}
+
 proc jsOpenExternal(id: string; req: JsonNode): string =
   ## openExternal(url). Opens an http(s) URL in the system browser so a link in
   ## the preview does not navigate the app's own webview away.
@@ -469,6 +488,7 @@ proc bindAll(w: Webview) =
   discard w.bind("saveSettings", jsSaveSettings)
   discard w.bind("menuOpen", jsMenuOpen)
   discard w.bind("menuNew", jsMenuNew)
+  discard w.bind("openPath", jsOpenPath)
   discard w.bind("openExternal", jsOpenExternal)
   discard w.bind("menuSave", jsMenuSave)
   discard w.bind("menuSaveAs", jsMenuSaveAs)
@@ -542,6 +562,13 @@ proc runSelfTest(): int =
   logLine("self-test: starting")
   verbose = true
   app.ui = defaultState()
+
+  # A temp file the driver opens through openPath(), exercising the same code the
+  # drag-and-drop uses (the drag gesture itself cannot be simulated headlessly).
+  let dropPath = getTempDir() / "zmarkdown-selftest-drop.md"
+  try: writeFile(dropPath, "# Dropped\n\ndropped body\n")
+  except CatchableError: discard
+
   let w = setupWindow(debug = false)
 
   var failures: seq[string]
@@ -554,6 +581,7 @@ proc runSelfTest(): int =
       let viewAfter = r{"view"}.getStr()
       let editBold = r{"editBold"}.getStr()
       let undoText = r{"undoText"}.getStr()
+      let dropText = r{"dropText"}.getStr()
       logLine("self-test: preview length " & $html.len)
       if not html.contains("<h1"): failures.add("missing <h1>")
       if not html.contains("<strong>"): failures.add("missing <strong>")
@@ -565,6 +593,7 @@ proc runSelfTest(): int =
       if viewAfter != "preview": failures.add("view switch failed (got '" & viewAfter & "')")
       if not editBold.contains("**sel**"): failures.add("bold transform failed (got '" & editBold & "')")
       if undoText != "start": failures.add("undo did not restore prior text (got '" & undoText & "')")
+      if not dropText.contains("dropped body"): failures.add("openPath did not return file content (got '" & dropText & "')")
     except CatchableError as e:
       failures.add("report parse error: " & e.msg)
     app.exiting = true
@@ -596,14 +625,18 @@ proc runSelfTest(): int =
         await window.historyRecord("start EDITED", 0, 0);
         var u = await window.historyUndo();
         var undoText = (u && u.ok) ? u.text : "";
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText });
+        var op = await window.openPath(false, "", window.__zmDropPath);
+        var dropText = (op && op.opened) ? op.text : "";
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '' });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '' });
       }
     });
   })();
   """
+  let dropInit = "window.__zmDropPath = " & $(%dropPath) & ";"
+  discard w.init(dropInit.cstring)
   discard w.init(driver)
 
   # Safety valve: if the UI never reports, terminate after a timeout so CI does
