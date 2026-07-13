@@ -353,18 +353,18 @@
     return p;
   }
 
-  document.addEventListener("dragover", (ev) => {
-    // Take over file drags only; leave text drags to insert into the editor.
-    if (ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files")) ev.preventDefault();
-  });
+  // Always take over drops over the window. Otherwise the webview navigates to a
+  // dropped file (replacing the whole app with the raw file) or the editor
+  // inserts the file:// URL. preventDefault on dragenter/dragover is required for
+  // the drop to be handled and for the default navigation to be suppressed.
+  ["dragenter", "dragover"].forEach((t) =>
+    document.addEventListener(t, (ev) => { ev.preventDefault(); }));
   document.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
     const dt = ev.dataTransfer;
     if (!dt) return;
-    const isFile = Array.from(dt.types || []).includes("Files") || (dt.files && dt.files.length);
-    if (!isFile) return; // a text drop inserts as usual
-    ev.preventDefault();
     const path = fileUrlToPath(pathFromDrop(dt));
-    if (!path) { log("drop: could not read a file path"); return; }
+    if (!path) { log("drop: no file path in the drop"); return; }
     try {
       const res = await window.openPath(dirty, editor.value, path);
       if (res && res.opened) {
@@ -591,6 +591,7 @@
       return { text: editor.value, selStart: editor.selectionStart, selEnd: editor.selectionEnd };
     },
     setRatio: function (r) { splitRatio = r; applyRatio(); return splitRatio; },
+    markClean: function () { setTitle(baseTitle, false); return true; },
     ready: false,
   };
 

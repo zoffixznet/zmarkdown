@@ -582,6 +582,7 @@ proc runSelfTest(): int =
       let editBold = r{"editBold"}.getStr()
       let undoText = r{"undoText"}.getStr()
       let dropText = r{"dropText"}.getStr()
+      let dropHandler = r{"dropHandler"}.getStr()
       logLine("self-test: preview length " & $html.len)
       if not html.contains("<h1"): failures.add("missing <h1>")
       if not html.contains("<strong>"): failures.add("missing <strong>")
@@ -594,6 +595,11 @@ proc runSelfTest(): int =
       if not editBold.contains("**sel**"): failures.add("bold transform failed (got '" & editBold & "')")
       if undoText != "start": failures.add("undo did not restore prior text (got '" & undoText & "')")
       if not dropText.contains("dropped body"): failures.add("openPath did not return file content (got '" & dropText & "')")
+      # The drop handler should have opened the temp file into the editor.
+      if dropHandler.startsWith("ERR:"):
+        logLine("self-test: note: synthetic drop unsupported here (" & dropHandler & ")")
+      elif not dropHandler.contains("dropped body"):
+        failures.add("drop handler did not open the dropped file (got '" & dropHandler & "')")
     except CatchableError as e:
       failures.add("report parse error: " & e.msg)
     app.exiting = true
@@ -627,10 +633,21 @@ proc runSelfTest(): int =
         var undoText = (u && u.ok) ? u.text : "";
         var op = await window.openPath(false, "", window.__zmDropPath);
         var dropText = (op && op.opened) ? op.text : "";
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText });
+        // Exercise the real drop handler with a synthetic file drop.
+        var dropHandler = "";
+        try {
+          window.__zm.markClean();
+          document.getElementById("editor").value = "BEFORE_DROP";
+          var dt = new DataTransfer();
+          dt.setData("text/uri-list", "file://" + encodeURI(window.__zmDropPath));
+          document.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+          await new Promise(function (r) { setTimeout(r, 600); });
+          dropHandler = document.getElementById("editor").value;
+        } catch (e) { dropHandler = "ERR:" + e; }
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropHandler: dropHandler });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '' });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropHandler: '' });
       }
     });
   })();
