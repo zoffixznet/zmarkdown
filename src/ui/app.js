@@ -54,8 +54,6 @@
     try {
       const html = await window.render(editor.value);
       reading.innerHTML = html;
-      // [~] task markers render as indeterminate (partial) checkboxes.
-      reading.querySelectorAll("input.task-partial").forEach((c) => { c.indeterminate = true; });
       lastRenderedHtml = html;
     } catch (e) {
       reading.innerHTML =

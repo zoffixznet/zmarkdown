@@ -16,25 +16,21 @@ func taskBox(kind: string): string =
   ## happens in the raw pane), so the box is disabled.
   case kind
   of "checked": """<input type="checkbox" checked disabled> """
-  of "partial": """<input type="checkbox" class="task-partial" disabled> """
   else: """<input type="checkbox" disabled> """
 
 func convertTaskItems*(html: string): string =
   ## Turn task-list markers at the start of a list item into read-only checkboxes.
   ## The markdown library renders `- [x] foo` literally as `<li>[x] foo`, so we
-  ## detect that (tight lists) and the loose `<li>\n<p>[x] ` form. Markers:
-  ## `[ ]` unchecked, `[x]`/`[X]` done, and `[~]` shown as an indeterminate
-  ## (partial / in progress) box. `[~]` is not a standard marker; it is a
-  ## convention some generated documents use, rendered here as a partial state.
+  ## detect that (tight lists) and the loose `<li>\n<p>[x] ` form. Only the
+  ## standard markers are handled: `[ ]` unchecked and `[x]`/`[X]` done. Any other
+  ## bracketed marker is left as plain text.
   html.multiReplace(
     ("<li>[ ] ", "<li class=\"task\">" & taskBox("")),
     ("<li>[x] ", "<li class=\"task\">" & taskBox("checked")),
     ("<li>[X] ", "<li class=\"task\">" & taskBox("checked")),
-    ("<li>[~] ", "<li class=\"task\">" & taskBox("partial")),
     ("<li>\n<p>[ ] ", "<li class=\"task\">\n<p>" & taskBox("")),
     ("<li>\n<p>[x] ", "<li class=\"task\">\n<p>" & taskBox("checked")),
     ("<li>\n<p>[X] ", "<li class=\"task\">\n<p>" & taskBox("checked")),
-    ("<li>\n<p>[~] ", "<li class=\"task\">\n<p>" & taskBox("partial")),
   )
 
 func escapeHtml(s: string): string =

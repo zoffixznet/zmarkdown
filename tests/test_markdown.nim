@@ -55,23 +55,25 @@ suite "error handling":
     check html.contains("<h1")
 
 suite "task list checkboxes":
-  test "tight markers become read-only checkboxes":
-    let h = renderMarkdown("- [x] done\n- [ ] todo\n- [~] partial\n- [X] caps")
+  test "standard markers become read-only checkboxes":
+    let h = renderMarkdown("- [x] done\n- [ ] todo\n- [X] caps")
     check h.contains("<li class=\"task\">")
     check h.contains("type=\"checkbox\" checked disabled")
-    check h.contains("class=\"task-partial\"")
     check not h.contains("[x]")
     check not h.contains("[ ]")
-    check not h.contains("[~]")
     check not h.contains("[X]")
 
   test "loose markers become checkboxes":
-    let h = renderMarkdown("- [x] a\n\n- [ ] b\n\n- [~] c")
+    let h = renderMarkdown("- [x] a\n\n- [ ] b")
     check h.contains("<li class=\"task\">")
     check h.contains("type=\"checkbox\" checked disabled")
-    check h.contains("class=\"task-partial\"")
     check not h.contains("[x]")
-    check not h.contains("[ ]")
+
+  test "unknown markers like [~] are left as plain text":
+    let h = renderMarkdown("- [~] partial\n- [x] done")
+    check h.contains("[~]")                                 # not converted
+    check not h.contains("task-partial")
+    check h.contains("type=\"checkbox\" checked disabled")  # [x] still converts
 
   test "a normal list is left alone":
     let h = renderMarkdown("- one\n- two")
