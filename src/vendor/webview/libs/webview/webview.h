@@ -462,7 +462,15 @@ constexpr bool is_json_special_char(unsigned int c) {
 }
 
 constexpr bool is_control_char(unsigned int c) {
-  return c <= 0x1f || (c >= 0x7f && c <= 0x9f);
+  // ZMarkdown vendored change: this runs over the raw UTF-8 *bytes* of the
+  // string being escaped, not over decoded code points. The original also
+  // treated 0x7f..0x9f as control chars, but 0x80..0x9f are ordinary UTF-8
+  // continuation bytes, so \u-escaping them individually shredded every
+  // multibyte character (an em dash E2 80 94 became E2  , invalid
+  // UTF-8), which broke the bound-call result and left the preview frozen.
+  // JSON only requires escaping the C0 controls (< 0x20); everything at or
+  // above 0x20, including all UTF-8 bytes, is passed through untouched.
+  return c <= 0x1f;
 }
 
 inline std::string json_escape(const std::string &s, bool add_quotes = true) {
