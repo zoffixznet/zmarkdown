@@ -48,9 +48,24 @@ make build   # just build the release binary into build/
 make dist    # build and package the Linux tarball
 ```
 
-`make deps` installs the GTK3 and WebKitGTK 4.1 development packages, `zenity`, and `xvfb`
-(used by the tests), installs the Nim toolchain via choosenim if it is missing, then fetches
-the pinned Nim dependencies. On Windows, run the dependency bootstrap directly:
+`make deps` prints exactly what it is about to do before it does it. On Linux it installs
+these system packages with `sudo apt-get` (and shows the full list and the root commands
+before asking for your password, so you can cancel):
+
+| Package | Why |
+| --- | --- |
+| `build-essential` | C/C++ toolchain (Nim compiles through a C++ backend) |
+| `pkg-config` | finds the GTK and WebKit build and link flags |
+| `libgtk-3-dev` | GTK 3, the toolkit the Linux webview is built on |
+| `libwebkit2gtk-4.1-dev` | WebKitGTK 4.1, renders the markdown preview |
+| `zenity` | native file dialog fallback (KDE already ships kdialog) |
+| `xvfb` | virtual display, used only by `make test` |
+| `ca-certificates`, `curl` | fetch the Nim toolchain over HTTPS |
+
+It then installs the Nim toolchain per-user via choosenim if it is missing (no sudo) and
+fetches the pinned Nim dependencies (`markdown`, `tinyfiledialogs`) into `~/.nimble`. On
+Windows, run the dependency bootstrap directly (per-user, no administrator rights needed;
+the Edge WebView2 runtime is already present on Windows 11):
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\deps-windows.ps1

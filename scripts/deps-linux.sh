@@ -8,16 +8,38 @@
 # pinned nimble dependencies. Uses sudo for the system packages.
 set -euo pipefail
 
-echo "==> Installing system packages (needs sudo)"
+# Single source of truth for the system packages, kept next to the descriptions
+# printed below so the two never drift.
+SYSTEM_PKGS=(
+  build-essential
+  pkg-config
+  libgtk-3-dev
+  libwebkit2gtk-4.1-dev
+  zenity
+  xvfb
+  ca-certificates
+  curl
+)
+
+echo "==> System packages to install with sudo (apt):"
+echo "      build-essential         C/C++ toolchain (Nim compiles through a C++ backend)"
+echo "      pkg-config              finds the GTK and WebKit build and link flags"
+echo "      libgtk-3-dev            GTK 3, the toolkit the Linux webview is built on"
+echo "      libwebkit2gtk-4.1-dev   WebKitGTK 4.1, renders the markdown preview"
+echo "      zenity                  native file dialog fallback (KDE already ships kdialog)"
+echo "      xvfb                    virtual display, used only by 'make test'"
+echo "      ca-certificates, curl   fetch the Nim toolchain over HTTPS"
+echo
+echo "    Commands that will run as root:"
+echo "      sudo apt-get update"
+echo "      sudo apt-get install -y --no-install-recommends ${SYSTEM_PKGS[*]}"
+echo
+echo "    Nim and the Nim libraries install per-user under ~/.nimble (no sudo)."
+echo "    You will be asked for your password now. Press Ctrl-C to cancel."
+echo
+
 sudo apt-get update
-sudo apt-get install -y --no-install-recommends \
-  build-essential \
-  pkg-config \
-  libgtk-3-dev \
-  libwebkit2gtk-4.1-dev \
-  zenity \
-  xvfb \
-  ca-certificates curl
+sudo apt-get install -y --no-install-recommends "${SYSTEM_PKGS[@]}"
 
 # Nim via choosenim (per-user, no sudo). The distro nim package is often too old.
 if ! command -v nim >/dev/null 2>&1; then

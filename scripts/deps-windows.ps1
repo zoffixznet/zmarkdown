@@ -10,6 +10,14 @@ $ErrorActionPreference = "Stop"
 
 function Have($name) { $null -ne (Get-Command $name -ErrorAction SilentlyContinue) }
 
+Write-Host "==> This installs (per-user, no administrator rights needed):"
+Write-Host "      Nim toolchain      via choosenim, into %USERPROFILE%\.nimble"
+Write-Host "      markdown 0.8.8     Nim library, renders the markdown preview"
+Write-Host "      tinyfiledialogs    Nim library, native open/save/message dialogs"
+Write-Host "    The Edge WebView2 runtime is already present on Windows 11, so"
+Write-Host "    nothing needs to be installed system-wide."
+Write-Host ""
+
 if (-not (Have "nim")) {
     Write-Host "==> Installing Nim via choosenim"
     $env:CHOOSENIM_NO_ANALYTICS = "1"
