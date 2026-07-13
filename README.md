@@ -102,6 +102,9 @@ does not use any of this; it uses WebKitGTK.
   underline. With text selected they wrap the selection; with nothing selected they insert
   the markers and place the caret between them. The link and image toolbar buttons insert
   sample markdown you can edit in place.
+- Undo and redo with the toolbar buttons or **Ctrl+Z** and **Ctrl+Y** (**Ctrl+Shift+Z**
+  also redoes). The history is bounded by memory, not by a step count: you can undo as far
+  back as fits in about 100 MB, and only when that is exceeded are the oldest edits dropped.
 - File shortcuts: **Ctrl+O** open, **Ctrl+S** save, **Ctrl+Shift+S** save as. The File menu
   in the toolbar has the same actions plus Exit. Open and Save As use native file dialogs.
   If you have unsaved changes when opening another file or exiting, a prompt lets you save,
@@ -117,9 +120,10 @@ There is no settings screen. The app remembers a little state between runs, stor
 - Linux: `~/.config/zmarkdown/state.json` (or `$XDG_CONFIG_HOME/zmarkdown/state.json`)
 - Windows: `%APPDATA%\ZMarkdown\state.json`
 
-It restores the window size (clamped to your current screen and never below a usable
-minimum), the view mode, and the divider position. It does not reopen your previous file:
-every launch starts with a fresh, empty document. The app follows your system light or dark
+It restores the window size and whether the window was maximized (the size is clamped to
+your current screen and never below a usable minimum), the view mode, and the divider
+position. It does not reopen your previous file: every launch starts with a fresh, empty
+document. The app follows your system light or dark
 preference automatically. If the state file is missing or unreadable, the app starts with
 sensible defaults; if the config directory cannot be written, it simply skips saving state.
 
@@ -136,6 +140,19 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
   lists and bare-URL autolinking are not rendered.
 - The app renders your own local document and intentionally lets raw HTML in the markdown
   pass through (this is how the underline shortcut works). It does not sanitize HTML.
+
+## See also
+
+ZMarkdown is written in [Nim](https://nim-lang.org), a statically typed, compiled language
+with a readable Python-like syntax that produces small, dependency-light native binaries.
+It is not as widely known as it deserves to be; if you are curious, these are good starting
+points:
+
+- Website and downloads: https://nim-lang.org
+- Learn Nim (tutorials and guides): https://nim-lang.org/learn.html
+- Documentation and standard library: https://nim-lang.org/documentation.html
+- Community forum: https://forum.nim-lang.org
+- Source code: https://github.com/nim-lang/Nim
 
 ## License
 

@@ -139,6 +139,8 @@ button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+button:disabled { opacity: 0.3; cursor: default; }
+button:disabled:hover, button:disabled:active { background: transparent; color: var(--chrome-ink); }
 
 button.icon svg { width: 16px; height: 16px; display: block; }
 

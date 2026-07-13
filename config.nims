@@ -8,6 +8,12 @@
 --mm:orc
 --threads:on
 
+# Keep the C/C++ build cache in the project (one subdir per target) so
+# `make clean`, which removes nimcache/, reliably forces a full recompile,
+# including the vendored webview.cc when its header changes. Nim otherwise caches
+# under ~/.cache/nim, where `make clean` cannot reach it.
+switch("nimcache", "nimcache/" & projectName())
+
 # Point Nim at the vendored webview binding so `import webview` resolves to our
 # patched copy rather than any nimble-installed one.
 switch("path", "src/vendor/webview")

@@ -33,12 +33,16 @@
   const fileMenu = $("file-menu");
   const btnFile = $("btn-file");
   const docTitle = $("doc-title");
+  const btnUndo = $("btn-undo");
+  const btnRedo = $("btn-redo");
 
   let splitRatio = 0.5;
   let currentView = "split";
   let dirty = false;
   let renderTimer = null;
   let lastRenderedHtml = "";
+  let historyTimer = null;
+  let lastCommitted = "";
 
   function log(msg) {
     try { if (window.logMsg) window.logMsg(String(msg)); } catch (e) {}
@@ -88,6 +92,7 @@
   /* ---- Editing shortcuts ----------------------------------------------- */
 
   async function runEdit(kind) {
+    await commitHistory(); // flush any pending typing so it is its own undo step
     const text = editor.value;
     const s = editor.selectionStart;
     const e = editor.selectionEnd;
@@ -99,9 +104,70 @@
       editor.focus();
       markDirty();
       scheduleRender();
+      await commitHistory(); // record the inserted markup as one undo step
     } catch (err) {
       log("edit " + kind + " failed: " + err);
     }
+  }
+
+  /* ---- Undo / redo ----------------------------------------------------- */
+  // History lives in Nim (bounded by memory, not step count). JS captures
+  // snapshots of the editor text and applies what undo/redo hand back.
+
+  function updateHistoryButtons(state) {
+    if (!state) return;
+    if (btnUndo) btnUndo.disabled = !state.canUndo;
+    if (btnRedo) btnRedo.disabled = !state.canRedo;
+  }
+
+  async function commitHistory() {
+    if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    const text = editor.value;
+    if (text === lastCommitted) return; // nothing new since the last commit
+    lastCommitted = text;
+    try {
+      updateHistoryButtons(
+        await window.historyRecord(text, editor.selectionStart, editor.selectionEnd));
+    } catch (e) { log("historyRecord failed: " + e); }
+  }
+
+  function scheduleCommit() {
+    if (historyTimer) clearTimeout(historyTimer);
+    historyTimer = setTimeout(commitHistory, 400);
+  }
+
+  async function resetHistory(text) {
+    lastCommitted = text;
+    try {
+      updateHistoryButtons(await window.historyReset(text));
+    } catch (e) { log("historyReset failed: " + e); }
+  }
+
+  function applySnapshot(snap) {
+    editor.value = snap.text;
+    const n = snap.text.length;
+    editor.selectionStart = Math.max(0, Math.min(n, snap.selStart | 0));
+    editor.selectionEnd = Math.max(0, Math.min(n, snap.selEnd | 0));
+    lastCommitted = snap.text; // this is now the current state; no pending commit
+    markDirty();
+    scheduleRender();
+    editor.focus();
+    updateHistoryButtons(snap);
+  }
+
+  async function doUndo() {
+    await commitHistory(); // flush pending typing so it can be undone too
+    try {
+      const r = await window.historyUndo();
+      if (r && r.ok) applySnapshot(r); else updateHistoryButtons(r);
+    } catch (e) { log("undo failed: " + e); }
+  }
+
+  async function doRedo() {
+    try {
+      const r = await window.historyRedo();
+      if (r && r.ok) applySnapshot(r); else updateHistoryButtons(r);
+    } catch (e) { log("redo failed: " + e); }
   }
 
   /* ---- View modes ------------------------------------------------------ */
@@ -222,6 +288,7 @@
           editor.value = res.text;
           setTitle(res.title, false);
           await doRender();
+          await resetHistory(editor.value);
           editor.focus();
         }
       } else if (action === "save") {
@@ -245,6 +312,8 @@
   $("btn-underline").addEventListener("click", () => runEdit("underline"));
   $("btn-link").addEventListener("click", () => runEdit("link"));
   $("btn-image").addEventListener("click", () => runEdit("image"));
+  btnUndo.addEventListener("click", doUndo);
+  btnRedo.addEventListener("click", doRedo);
 
   for (const b of document.querySelectorAll(".viewmodes button")) {
     b.addEventListener("click", () => setView(b.getAttribute("data-view")));
@@ -252,7 +321,7 @@
 
   /* ---- Editor events --------------------------------------------------- */
 
-  editor.addEventListener("input", () => { markDirty(); scheduleRender(); });
+  editor.addEventListener("input", () => { markDirty(); scheduleRender(); scheduleCommit(); });
 
   editor.addEventListener("keydown", (ev) => {
     const mod = ev.ctrlKey || ev.metaKey;
@@ -261,6 +330,9 @@
     if (k === "b") { ev.preventDefault(); runEdit("bold"); }
     else if (k === "i") { ev.preventDefault(); runEdit("italic"); }
     else if (k === "u") { ev.preventDefault(); runEdit("underline"); }
+    else if (k === "z" && ev.shiftKey) { ev.preventDefault(); doRedo(); }
+    else if (k === "z") { ev.preventDefault(); doUndo(); }
+    else if (k === "y") { ev.preventDefault(); doRedo(); }
     else if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
@@ -272,7 +344,10 @@
     const mod = ev.ctrlKey || ev.metaKey;
     if (!mod) return;
     const k = ev.key.toLowerCase();
-    if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
+    if (k === "z" && ev.shiftKey) { ev.preventDefault(); doRedo(); }
+    else if (k === "z") { ev.preventDefault(); doUndo(); }
+    else if (k === "y") { ev.preventDefault(); doRedo(); }
+    else if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
   });
@@ -290,6 +365,7 @@
     setView(currentView, false);
     applyRatio();
     await doRender();
+    await resetHistory(editor.value);
     editor.focus();
     log("ui ready");
   }

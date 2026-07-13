@@ -5,7 +5,7 @@
 ## transforms, markdown rendering, file IO, dialogs, state) is Nim, reached from
 ## the page through bound procs. The webview is only the display.
 
-import std/[json, os, times, strutils, base64]
+import std/[json, os, times, strutils, base64, options]
 import std/atomics
 
 import webview
@@ -15,12 +15,73 @@ import core/markdown as md
 import core/state
 import core/files
 import core/dialogs
+import core/history as histmod
 
-# On Linux we make a couple of direct GTK/GDK calls (live window size and the
-# monitor geometry used to clamp the restored size), so pull in the GTK header
-# for the emitted C++. On Windows these paths are compiled out.
+# Direct native calls for window geometry and the maximized state. On Linux we
+# track size and maximized live through GTK signals, so the values are captured
+# while the window still exists (the webview destroys it on close, before our
+# persistence runs). On Windows we read them from the window on demand. On other
+# platforms these paths are compiled out.
 when defined(linux):
-  {.emit: "#include <gtk/gtk.h>".}
+  {.emit: """/*TYPESECTION*/
+#include <gtk/gtk.h>
+
+/* Live window geometry, kept current by GTK signal handlers. The size is
+   recorded only while not maximized, so it always holds the size to restore to
+   when un-maximizing. */
+static int zmWinW = 0;
+static int zmWinH = 0;
+static int zmWinMax = 0;
+
+static gboolean zm_on_configure(GtkWidget* wdg, GdkEvent* ev, gpointer data) {
+  (void)ev; (void)data;
+  if (!gtk_window_is_maximized(GTK_WINDOW(wdg))) {
+    int ww = 0, hh = 0;
+    gtk_window_get_size(GTK_WINDOW(wdg), &ww, &hh);
+    if (ww > 0 && hh > 0) { zmWinW = ww; zmWinH = hh; }
+  }
+  zmWinMax = gtk_window_is_maximized(GTK_WINDOW(wdg)) ? 1 : 0;
+  return FALSE;
+}
+
+static gboolean zm_on_state(GtkWidget* wdg, GdkEventWindowState* ev, gpointer data) {
+  (void)wdg; (void)data;
+  zmWinMax = (ev->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) ? 1 : 0;
+  return FALSE;
+}
+
+extern "C" void zmTrackWindow(void* win) {
+  if (!win) return;
+  g_signal_connect(G_OBJECT(win), "configure-event", G_CALLBACK(zm_on_configure), NULL);
+  g_signal_connect(G_OBJECT(win), "window-state-event", G_CALLBACK(zm_on_state), NULL);
+}
+extern "C" void zmMaximizeWindow(void* win) { if (win) gtk_window_maximize(GTK_WINDOW(win)); }
+extern "C" int zmGetWinW(void)   { return zmWinW; }
+extern "C" int zmGetWinH(void)   { return zmWinH; }
+extern "C" int zmGetWinMax(void) { return zmWinMax; }
+""".}
+
+  proc zmTrackWindow(win: pointer) {.importc, nodecl.}
+  proc zmMaximizeWindow(win: pointer) {.importc, nodecl.}
+  proc zmGetWinW(): cint {.importc, nodecl.}
+  proc zmGetWinH(): cint {.importc, nodecl.}
+  proc zmGetWinMax(): cint {.importc, nodecl.}
+
+when defined(windows):
+  {.emit: """/*TYPESECTION*/
+#include <windows.h>
+extern "C" void zmMaximizeWindow(void* hwnd) { if (hwnd) ShowWindow((HWND)hwnd, SW_MAXIMIZE); }
+extern "C" int zmGetWinPlacement(void* hwnd, int* w, int* h, int* maxd) {
+  WINDOWPLACEMENT wp; wp.length = sizeof(wp);
+  if (!hwnd || !GetWindowPlacement((HWND)hwnd, &wp)) return 0;
+  *w = wp.rcNormalPosition.right - wp.rcNormalPosition.left;
+  *h = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
+  *maxd = (wp.showCmd == SW_SHOWMAXIMIZED) ? 1 : 0;
+  return 1;
+}
+""".}
+  proc zmMaximizeWindow(win: pointer) {.importc, nodecl.}
+  proc zmGetWinPlacement(hwnd: pointer; w, h, maxd: ptr cint): cint {.importc, nodecl.}
 
 # ---- Embedded UI assets (compiled into the binary) -------------------------
 
@@ -171,27 +232,39 @@ proc jsPersistState(id: string; req: JsonNode): string =
     discard
   result = "true"
 
-proc currentWindowSize(): tuple[w, h: int] =
-  ## Best-effort read of the live window size so exit persists what the user
-  ## actually has now, not the size we restored. Falls back to the stored size.
-  result = (app.ui.width, app.ui.height)
+proc captureWindowState(): tuple[w, h, maximized: int] =
+  ## Read the window's current non-maximized size and whether it is maximized, so
+  ## exit persists what the user actually has now. Falls back to the stored values
+  ## when the live ones are not available.
+  result = (app.ui.width, app.ui.height, (if app.ui.maximized: 1 else: 0))
   when defined(linux):
-    # getWindow returns a GtkWindow*; gtk_window_get_size fills width/height.
+    # Values tracked live via GTK signals; zmGetWinW/H hold the last size seen
+    # while not maximized, so un-maximizing restores to it.
+    let lw = zmGetWinW().int
+    let lh = zmGetWinH().int
+    if lw >= MinWidth and lh >= MinHeight:
+      result.w = lw
+      result.h = lh
+    result.maximized = zmGetWinMax().int
+  when defined(windows):
     try:
       let win = getWindow(app.w)
       if win != nil:
-        var ww, hh: cint
-        {.emit: "gtk_window_get_size((GtkWindow*)`win`, &`ww`, &`hh`);".}
-        if ww.int >= MinWidth and hh.int >= MinHeight:
-          result = (ww.int, hh.int)
+        var ww, hh, mx: cint
+        if zmGetWinPlacement(win, addr ww, addr hh, addr mx) != 0:
+          if ww.int >= MinWidth and hh.int >= MinHeight:
+            result.w = ww.int
+            result.h = hh.int
+          result.maximized = mx.int
     except CatchableError:
       discard
 
 proc persistNow() =
   ## Write current UI state to disk, logging but never failing on error.
-  let (w, h) = currentWindowSize()
-  app.ui.width = w
-  app.ui.height = h
+  let s = captureWindowState()
+  app.ui.width = s.w
+  app.ui.height = s.h
+  app.ui.maximized = s.maximized != 0
   if saveState(app.ui):
     vlog("state saved: " & statePath())
   else:
@@ -288,6 +361,46 @@ proc jsLog(id: string; req: JsonNode): string =
     vlog("ui: " & req[0].getStr())
   "true"
 
+# ---- Undo/redo history (bounded by memory, not step count) -----------------
+
+var history = initHistory()
+
+proc historyStatus(): JsonNode =
+  %*{"canUndo": history.canUndo, "canRedo": history.canRedo}
+
+proc snapshotJson(s: Snapshot): JsonNode =
+  %*{"ok": true, "text": s.text, "selStart": s.selStart, "selEnd": s.selEnd,
+     "canUndo": history.canUndo, "canRedo": history.canRedo}
+
+proc jsHistoryReset(id: string; req: JsonNode): string =
+  ## historyReset(text). Start history over for a new document.
+  let text = if req.len > 0 and req[0].kind == JString: req[0].getStr() else: ""
+  history.reset(text)
+  $ historyStatus()
+
+proc jsHistoryRecord(id: string; req: JsonNode): string =
+  ## historyRecord(text, selStart, selEnd). Commit a new editor state.
+  try:
+    let text = req[0].getStr()
+    let a = if req.len > 1: req[1].getInt() else: 0
+    let b = if req.len > 2: req[2].getInt() else: 0
+    history.record(text, a, b)
+  except CatchableError as e:
+    vlog("historyRecord failed: " & e.msg)
+  $ historyStatus()
+
+proc jsHistoryUndo(id: string; req: JsonNode): string =
+  ## historyUndo() -> {ok, text, selStart, selEnd, canUndo, canRedo}
+  let u = history.undo()
+  if u.isSome: $ snapshotJson(u.get())
+  else: $ %*{"ok": false, "canUndo": history.canUndo, "canRedo": history.canRedo}
+
+proc jsHistoryRedo(id: string; req: JsonNode): string =
+  ## historyRedo() -> {ok, text, selStart, selEnd, canUndo, canRedo}
+  let r = history.redo()
+  if r.isSome: $ snapshotJson(r.get())
+  else: $ %*{"ok": false, "canUndo": history.canUndo, "canRedo": history.canRedo}
+
 # ---- Window construction ---------------------------------------------------
 
 proc computeRestoreSize(): tuple[w, h: int] =
@@ -324,6 +437,10 @@ proc bindAll(w: Webview) =
   discard w.bind("menuSaveAs", jsMenuSaveAs)
   discard w.bind("requestExit", jsRequestExit)
   discard w.bind("logMsg", jsLog)
+  discard w.bind("historyReset", jsHistoryReset)
+  discard w.bind("historyRecord", jsHistoryRecord)
+  discard w.bind("historyUndo", jsHistoryUndo)
+  discard w.bind("historyRedo", jsHistoryRedo)
 
 proc setWindowIcon(w: Webview) =
   ## Set the window/taskbar icon from the embedded PNG. Linux only; on Windows
@@ -364,6 +481,16 @@ proc setupWindow(debug: bool): Webview =
   w.size = (rw, rh)
   w.setSize(MinWidth, MinHeight, WebviewHintMin)
   vlog("window size " & $rw & "x" & $rh & " (min " & $MinWidth & "x" & $MinHeight & ")")
+
+  # Track live geometry (Linux) and restore the maximized state if it was saved.
+  let win = getWindow(w)
+  when defined(linux):
+    if win != nil: zmTrackWindow(win)
+  when defined(linux) or defined(windows):
+    if app.ui.maximized and win != nil:
+      zmMaximizeWindow(win)
+      vlog("restoring maximized window")
+
   bindAll(w)
   setDialogLogger(proc (m: string) {.gcsafe.} = logLine(m))
   w.html = buildPage()
@@ -389,13 +516,18 @@ proc runSelfTest(): int =
       let html = r{"html"}.getStr()
       let viewAfter = r{"view"}.getStr()
       let editBold = r{"editBold"}.getStr()
+      let undoText = r{"undoText"}.getStr()
       logLine("self-test: preview length " & $html.len)
       if not html.contains("<h1"): failures.add("missing <h1>")
       if not html.contains("<strong>"): failures.add("missing <strong>")
       if not html.contains("<u>"): failures.add("missing <u>")
       if not html.contains("<code>"): failures.add("missing <code>")
+      # Regression guard for the json_escape UTF-8 fix: a bound call's result
+      # carrying non-ASCII must survive the bridge intact.
+      if not html.contains("—"): failures.add("em dash lost in preview (UTF-8 bridge)")
       if viewAfter != "preview": failures.add("view switch failed (got '" & viewAfter & "')")
       if not editBold.contains("**sel**"): failures.add("bold transform failed (got '" & editBold & "')")
+      if undoText != "start": failures.add("undo did not restore prior text (got '" & undoText & "')")
     except CatchableError as e:
       failures.add("report parse error: " & e.msg)
     app.exiting = true
@@ -418,15 +550,19 @@ proc runSelfTest(): int =
     }
     waitReady(async function () {
       try {
-        var sample = "# Heading\n\nThis is **bold** and <u>under</u> and `code`.\n\n- a\n- b\n";
+        var sample = "# Heading — dash\n\nThis is **bold** and <u>under</u> and `code`.\n\n- a\n- b\n";
         await window.__zm.setEditor(sample);
         var html = window.__zm.getPreviewHtml();
         var view = window.__zm.setView("preview");
         var ed = await window.__zm.runEdit("bold", "sel", 0, 3);
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text });
+        await window.historyReset("start");
+        await window.historyRecord("start EDITED", 0, 0);
+        var u = await window.historyUndo();
+        var undoText = (u && u.ok) ? u.text : "";
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '' });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '' });
       }
     });
   })();

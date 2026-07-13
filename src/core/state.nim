@@ -16,8 +16,9 @@ type
 
   UiState* = object
     ## Everything persisted between runs.
-    width*: int           ## window width in pixels
-    height*: int          ## window height in pixels
+    width*: int           ## window width in pixels (the non-maximized size)
+    height*: int          ## window height in pixels (the non-maximized size)
+    maximized*: bool      ## whether the window was maximized at exit
     view*: ViewMode       ## current view mode
     splitRatio*: float    ## divider position in split mode, 0.0 .. 1.0
 
@@ -37,6 +38,7 @@ func defaultState*(): UiState =
   UiState(
     width: DefaultWidth,
     height: DefaultHeight,
+    maximized: false,
     view: vmSplit,
     splitRatio: DefaultSplitRatio,
   )
@@ -105,6 +107,7 @@ func toJson*(s: UiState): JsonNode =
   %*{
     "width": s.width,
     "height": s.height,
+    "maximized": s.maximized,
     "view": $s.view,
     "splitRatio": s.splitRatio,
   }
@@ -119,6 +122,8 @@ func parseState*(node: JsonNode): UiState =
     result.width = node["width"].getInt()
   if node.hasKey("height") and node["height"].kind == JInt:
     result.height = node["height"].getInt()
+  if node.hasKey("maximized") and node["maximized"].kind == JBool:
+    result.maximized = node["maximized"].getBool()
   if node.hasKey("view") and node["view"].kind == JString:
     case node["view"].getStr()
     of "text": result.view = vmText
