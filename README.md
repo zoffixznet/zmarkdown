@@ -78,6 +78,21 @@ then build with:
 nim cpp -d:release --hints:off -o:build\zmarkdown.exe src\zmarkdown.nim
 ```
 
+### The Microsoft WebView2 SDK is fetched, not bundled
+
+The Windows build compiles against the Microsoft WebView2 SDK headers. Those headers are
+**not** stored in this repository. The WebView2 SDK is Microsoft's and comes under
+Microsoft's own license terms, separate from this project, so rather than redistribute it
+here we download it from Microsoft's official NuGet package at build time. This keeps the
+repository's own licensing clean and avoids shipping files whose redistribution terms would
+have to be vetted separately.
+
+The Windows dependency bootstrap (`scripts\deps-windows.ps1`) and the CI build both run
+`scripts\fetch-webview2.ps1`, which downloads the SDK and places its headers in
+`src/vendor/webview/libs/webview2/` (a git-ignored folder). Set `WEBVIEW2_SDK_VERSION` to
+pin a specific SDK version; otherwise the latest stable release is used. The Linux build
+does not use any of this; it uses WebKitGTK.
+
 ## Using it
 
 - Three view buttons in the toolbar switch between **Text**, **Split**, and **Preview**.
@@ -124,6 +139,9 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
 
 ## License
 
-The application is MIT licensed. The bundled fonts, Source Serif 4 and IBM Plex Mono, are
-under the SIL Open Font License 1.1; their license texts are in
-`src/ui/assets/fonts/`.
+The application's own code is MIT licensed (see `LICENSE`). It builds on several
+third-party components that keep their own licenses: the webview library and its Nim
+binding (MIT), the Source Serif 4 and IBM Plex Mono fonts (SIL Open Font License 1.1), and,
+for the Windows build only, the Microsoft WebView2 SDK (Microsoft's own license), which is
+fetched at build time rather than stored here. The full list, with each license and where
+to find it, is in `THIRD-PARTY-LICENSES.md`.

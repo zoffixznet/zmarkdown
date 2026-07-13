@@ -75,6 +75,12 @@ jobs:
           nimble install -y "markdown@0.8.8"
           nimble install -y "tinyfiledialogs@3.21.3"
 
+      - name: Fetch WebView2 SDK headers (not bundled in this repo)
+        shell: pwsh
+        # Microsoft's WebView2 SDK is under Microsoft's own license and is kept
+        # out of this repository; download its headers from NuGet at build time.
+        run: ./scripts/fetch-webview2.ps1
+
       - name: Generate icons
         shell: bash
         run: |

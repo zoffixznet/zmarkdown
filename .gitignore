@@ -17,6 +17,10 @@ tests/test_files
 # git; a plain `nim cpp` should build without running the icon script first.
 !/src/ui/assets/icon-128.png
 
+# Microsoft WebView2 SDK headers are fetched at build time (Windows only) by
+# scripts/fetch-webview2.ps1, never committed. See THIRD-PARTY-LICENSES.md.
+/src/vendor/webview/libs/webview2/
+
 # Nim caches
 nimcache/
 .nimcache/

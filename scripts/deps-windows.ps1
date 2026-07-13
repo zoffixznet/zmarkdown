@@ -14,6 +14,8 @@ Write-Host "==> This installs (per-user, no administrator rights needed):"
 Write-Host "      Nim toolchain      via choosenim, into %USERPROFILE%\.nimble"
 Write-Host "      markdown 0.8.8     Nim library, renders the markdown preview"
 Write-Host "      tinyfiledialogs    Nim library, native open/save/message dialogs"
+Write-Host "      WebView2 SDK       Microsoft headers, downloaded from NuGet (not"
+Write-Host "                         stored in this repo; Microsoft's own license)"
 Write-Host "    The Edge WebView2 runtime is already present on Windows 11, so"
 Write-Host "    nothing needs to be installed system-wide."
 Write-Host ""
@@ -42,5 +44,9 @@ Write-Host "==> Installing pinned nimble dependencies"
 # fetched.
 nimble install -y "markdown@0.8.8"
 nimble install -y "tinyfiledialogs@3.21.3"
+
+# The Microsoft WebView2 SDK is not stored in this repo (Microsoft's own license);
+# fetch its headers from NuGet so the Windows build can compile.
+& (Join-Path $PSScriptRoot "fetch-webview2.ps1")
 
 Write-Host "==> Done. Build with: nim cpp -d:release --app:gui -o:build\zmarkdown.exe src\zmarkdown.nim"
