@@ -105,10 +105,12 @@
   /* ---- Editing shortcuts ----------------------------------------------- */
 
   async function runEdit(kind) {
-    await commitHistory(); // flush any pending typing so it is its own undo step
+    // Capture the text and selection synchronously, before any await, so nothing
+    // can shift them in the async gap.
     const text = editor.value;
     const s = editor.selectionStart;
     const e = editor.selectionEnd;
+    await commitHistory(); // flush any pending typing so it is its own undo step
     try {
       const res = await window.applyEdit(kind, text, s, e);
       editor.value = res.text;
