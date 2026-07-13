@@ -336,21 +336,23 @@
 
   /* ---- Drag and drop a file to open it --------------------------------- */
 
-  function pathFromDrop(dt) {
-    let uri = "";
-    try { uri = dt.getData("text/uri-list") || ""; } catch (e) {}
-    if (!uri) { try { uri = dt.getData("text/plain") || ""; } catch (e) {} }
-    // A uri-list may hold several lines and comments (#); take the first real one.
-    const line = uri.split(/[\r\n]+/).map((s) => s.trim()).find((s) => s && !s.startsWith("#"));
-    return line || "";
-  }
-
   function fileUrlToPath(uri) {
     if (!uri || !/^file:\/\//i.test(uri)) return "";
     let p = uri.replace(/^file:\/\//i, "");
     try { p = decodeURIComponent(p); } catch (e) {}
     if (/^\/[A-Za-z]:[\/\\]/.test(p)) p = p.slice(1); // Windows: /C:/... -> C:/...
     return p;
+  }
+
+  // The first file:// URL in a uri-list / plain-text blob (skipping # comments).
+  function firstFileUri(s) {
+    const line = (s || "").split(/[\r\n]+/).map((x) => x.trim()).find((x) => x && !x.startsWith("#"));
+    return line && /^file:\/\//i.test(line) ? line : "";
+  }
+  // A file:// URL out of an href/src in an HTML drag payload.
+  function fileUriFromHtml(s) {
+    const m = (s || "").match(/(?:href|src)\s*=\s*["']?(file:\/\/[^"'\s>]+)/i);
+    return m ? m[1] : "";
   }
 
   async function loadIntoEditor(text, title) {
@@ -361,43 +363,69 @@
     editor.focus();
   }
 
-  // Always take over drops over the window. Otherwise the webview navigates to a
-  // dropped file (replacing the whole app with the raw file) or the editor
-  // inserts the file:// URL. preventDefault on dragenter/dragover is required for
-  // the drop to be handled and for the default navigation to be suppressed.
+  async function openDroppedPath(path) {
+    log("drop: opening path " + path);
+    try {
+      const res = await window.openPath(dirty, editor.value, path);
+      if (res && res.opened) await loadIntoEditor(res.text, res.title);
+    } catch (e) { log("drop openPath failed: " + e); }
+  }
+  async function openDroppedFile(file) {
+    try {
+      const text = await file.text();
+      log("drop: read content of " + (file.name || "?") + " (" + text.length + " chars)");
+      const res = await window.loadDropped(dirty, editor.value, file.name || "");
+      if (res && res.ok) await loadIntoEditor(text, res.title);
+    } catch (e) { log("drop content read failed: " + e); }
+  }
+
+  // Always take over drops so the webview cannot navigate to the dropped file or
+  // paste its URL. The handler is deliberately NOT async: dataTransfer (getData
+  // and items) is only valid synchronously during the event, so read it all here
+  // and hand the async work off.
   ["dragenter", "dragover"].forEach((t) =>
     document.addEventListener(t, (ev) => { ev.preventDefault(); }));
-  document.addEventListener("drop", async (ev) => {
+  document.addEventListener("drop", (ev) => {
     ev.preventDefault();
     const dt = ev.dataTransfer;
     if (!dt) return;
-    try {
-      log("drop: types=[" + Array.from(dt.types || []).join(",") +
-          "] files=" + (dt.files ? dt.files.length : 0));
-    } catch (e) {}
-    // 1. A real filesystem path (best: Save then writes back to it).
-    let path = fileUrlToPath(pathFromDrop(dt));
-    if (!path && dt.files && dt.files.length && dt.files[0].path) path = dt.files[0].path;
-    if (path) {
-      log("drop: opening path " + path);
-      try {
-        const res = await window.openPath(dirty, editor.value, path);
-        if (res && res.opened) await loadIntoEditor(res.text, res.title);
-      } catch (e) { log("drop openPath failed: " + e); }
-      return;
+
+    const g = {};
+    for (const t of ["text/uri-list", "text/plain", "URL", "text/html"]) {
+      let v = ""; try { v = dt.getData(t) || ""; } catch (e) {}
+      g[t] = v;
+      log("drop " + t + "=[" + v.slice(0, 240) + "]");
     }
-    // 2. Fallback: read the dropped file's content directly (no path available).
-    if (dt.files && dt.files.length) {
-      try {
-        const file = dt.files[0];
-        const text = await file.text();
-        log("drop: loading content of " + (file.name || "?") + " (" + text.length + " chars)");
-        const res = await window.loadDropped(dirty, editor.value, file.name || "");
-        if (res && res.ok) await loadIntoEditor(text, res.title);
-      } catch (e) { log("drop content read failed: " + e); }
-      return;
+    const fileCount = dt.files ? dt.files.length : 0;
+    log("drop files=" + fileCount + " types=[" + Array.from(dt.types || []).join(",") + "]");
+
+    let uri = firstFileUri(g["text/uri-list"]) || firstFileUri(g["text/plain"]) ||
+              firstFileUri(g["URL"]) || fileUriFromHtml(g["text/html"]);
+    let path = fileUrlToPath(uri);
+    if (!path && fileCount && dt.files[0].path) path = dt.files[0].path;
+
+    if (path) { openDroppedPath(path); return; }
+    if (fileCount) { openDroppedFile(dt.files[0]); return; }
+
+    // Async fallback: some WebKit builds expose the drag strings only via items.
+    if (dt.items && dt.items.length) {
+      let tried = false;
+      for (const it of dt.items) {
+        if (it.kind === "string" && /uri-list|text\/plain|text\/html/i.test(it.type)) {
+          tried = true;
+          const ty = it.type;
+          it.getAsString((s) => {
+            log("drop item " + ty + "=[" + (s || "").slice(0, 240) + "]");
+            const u = firstFileUri(s) || (/html/i.test(ty) ? fileUriFromHtml(s) : "");
+            const p = fileUrlToPath(u);
+            if (p) openDroppedPath(p);
+            else log("drop: item gave no file path");
+          });
+        }
+      }
+      if (tried) return;
     }
-    log("drop: nothing usable (no path, no files)");
+    log("drop: nothing usable");
   });
 
   /* ---- Toolbar buttons ------------------------------------------------- */
