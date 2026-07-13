@@ -139,9 +139,6 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
 
 ## License
 
-The application's own code is MIT licensed (see `LICENSE`). It builds on several
-third-party components that keep their own licenses: the webview library and its Nim
-binding (MIT), the Source Serif 4 and IBM Plex Mono fonts (SIL Open Font License 1.1), and,
-for the Windows build only, the Microsoft WebView2 SDK (Microsoft's own license), which is
-fetched at build time rather than stored here. The full list, with each license and where
-to find it, is in `THIRD-PARTY-LICENSES.md`.
+The application is MIT licensed. The bundled fonts, Source Serif 4 and IBM Plex Mono, are
+under the SIL Open Font License 1.1; their license texts are in
+`src/ui/assets/fonts/`.
