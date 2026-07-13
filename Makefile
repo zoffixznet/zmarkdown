@@ -47,16 +47,22 @@ deps:
 icons:
 	bash scripts/gen-icons.sh
 
+# icon-128.png is committed and embedded into the binary; the rest are generated
+# for packaging. Build only needs the embedded one, which is already present, so
+# build does not force a regeneration (that would churn the committed file).
+src/ui/assets/icon-128.png:
+	bash scripts/gen-icons.sh
+
 ## build: build the release binary into build/
 .PHONY: build
-build: icons
+build: src/ui/assets/icon-128.png
 	@mkdir -p build
 	$(NIM) $(NIMFLAGS_RELEASE) --app:gui -o:$(BIN) $(SRC)
 	@echo "Built $(BIN)"
 
 ## debug: build a debug binary with verbose logging and stack traces
 .PHONY: debug
-debug: icons
+debug: src/ui/assets/icon-128.png
 	@mkdir -p build
 	$(NIM) $(NIMFLAGS_DEBUG) -o:$(BIN) $(SRC)
 	@echo "Built $(BIN) (debug)"
@@ -88,13 +94,16 @@ smoke: build
 
 ## dist: build and package the Linux tarball (binary, README, .desktop, icons)
 .PHONY: dist
-dist: build
+dist: icons build
 	bash scripts/package-linux.sh
 
 ## clean: remove build outputs, caches, and generated icons
 .PHONY: clean
 clean:
 	rm -rf build dist nimcache
-	rm -f src/ui/assets/icon-*.png src/ui/assets/icon.ico
+	# Remove generated icons except the committed, embedded icon-128.png.
+	rm -f src/ui/assets/icon-16.png src/ui/assets/icon-32.png \
+	      src/ui/assets/icon-48.png src/ui/assets/icon-64.png \
+	      src/ui/assets/icon-256.png src/ui/assets/icon.ico
 	rm -f tests/test_editing tests/test_state tests/test_files tests/test_markdown
 	@echo "Cleaned"
