@@ -1,0 +1,120 @@
+name: Build and release
+
+# Build the Linux and Windows binaries and attach them to a GitHub Release on a
+# version tag. Nothing built is committed to the repo; the release page hosts the
+# binaries. Also runs on manual dispatch to sanity check the build without a tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            zenity xvfb imagemagick librsvg2-bin
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.x"
+
+      - name: Install nimble dependencies
+        run: |
+          nimble install -y "markdown@0.8.8"
+          nimble install -y "tinyfiledialogs@3.21.3"
+
+      - name: Build
+        run: make build
+
+      - name: Test (unit + headless smoke)
+        run: |
+          make unit
+          xvfb-run -a ./build/zmarkdown --self-test
+
+      - name: Package tarball
+        run: make dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zmarkdown-linux
+          path: dist/*.tar.gz
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.x"
+
+      - name: Install nimble dependencies
+        run: |
+          nimble install -y "markdown@0.8.8"
+          nimble install -y "tinyfiledialogs@3.21.3"
+
+      - name: Generate icons
+        shell: bash
+        run: |
+          # ImageMagick ships on the Windows runner as 'magick'.
+          bash scripts/gen-icons.sh || echo "icon generation skipped"
+
+      - name: Compile Windows resource (icon + version info)
+        shell: bash
+        run: |
+          cp src/ui/assets/icon.ico packaging/windows/icon.ico
+          windres packaging/windows/zmarkdown.rc -O coff -o build/zmarkdown.res || \
+            (mkdir -p build && windres packaging/windows/zmarkdown.rc -O coff -o build/zmarkdown.res)
+
+      - name: Build
+        shell: bash
+        env:
+          ZMARKDOWN_RES: build/zmarkdown.res
+        run: |
+          mkdir -p build
+          nim cpp -d:release --hints:off -o:build/zmarkdown.exe src/zmarkdown.nim
+
+      - name: Package zip
+        shell: bash
+        run: |
+          version="$(grep -oP '^version\s*=\s*"\K[^"]+' zmarkdown.nimble | head -1)"
+          name="zmarkdown-${version}-windows-x86_64"
+          mkdir -p "dist/$name"
+          cp build/zmarkdown.exe "dist/$name/zmarkdown.exe"
+          cp README.md "dist/$name/README.md"
+          cp src/ui/assets/icon.ico "dist/$name/zmarkdown.ico"
+          cd dist && 7z a "${name}.zip" "$name" >/dev/null
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zmarkdown-windows
+          path: dist/*.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip

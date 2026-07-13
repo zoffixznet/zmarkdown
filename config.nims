@@ -17,6 +17,15 @@ switch("path", "src/vendor/webview")
 when defined(linux):
   --define:webviewGtk
 
+when defined(windows):
+  # Build a GUI executable so no console window appears (WebView2 is preinstalled
+  # on Windows 11). Embed the app icon: the CI build compiles the .rc into a
+  # .res next to the icon and passes ZMARKDOWN_RES=path so it is linked in.
+  --app:gui
+  let resFile = getEnv("ZMARKDOWN_RES")
+  if resFile.len > 0:
+    switch("passL", resFile)
+
 when defined(release):
   --opt:size
   --passC:"-DNDEBUG"

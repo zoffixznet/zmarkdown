@@ -1,0 +1,32 @@
+/* Windows resource script: embeds the app icon into the executable.
+ *
+ * The lowest-numbered icon resource becomes the executable's icon shown in
+ * Explorer and the taskbar. IDI_APPLICATION (32512) is also what the webview
+ * window class loads for the window icon, so we register the icon under that id
+ * as well, pointing at the same generated .ico. Paths are relative to this file;
+ * the build passes the include dir so windres finds icon.ico. */
+
+1 ICON "icon.ico"
+32512 ICON "icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "FileDescription", "ZMarkdown - a small markdown editor and viewer"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "ProductName", "ZMarkdown"
+      VALUE "ProductVersion", "0.1.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

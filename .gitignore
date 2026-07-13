@@ -3,7 +3,10 @@
 /dist/
 *.o
 *.exe
+*.res
 zmarkdown
+# Windows resource build copies the ico next to the .rc; do not commit it.
+/packaging/windows/icon.ico
 tests/test_editing
 tests/test_state
 tests/test_markdown
