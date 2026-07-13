@@ -13,6 +13,9 @@ tests/test_markdown
 tests/test_files
 /src/ui/assets/icon-*.png
 /src/ui/assets/icon.ico
+# icon-128.png is embedded into the binary at compile time, so keep a copy in
+# git; a plain `nim cpp` should build without running the icon script first.
+!/src/ui/assets/icon-128.png
 
 # Nim caches
 nimcache/
