@@ -7,7 +7,6 @@
 ## default (treated as "cancel") rather than crashing.
 
 import pkg/tinyfiledialogs as tfd
-import std/strutils
 
 type
   SavePrompt* = enum

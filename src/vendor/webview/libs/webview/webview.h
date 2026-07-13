@@ -1031,8 +1031,15 @@ private:
       return loaded_lib;
     }
 
-    constexpr std::array<const char *, 2> lib_names{"libwebkit2gtk-4.1.so",
-                                                    "libwebkit2gtk-4.0.so"};
+    // ZMarkdown vendored change: also look up the versioned sonames. End-user
+    // machines have only libwebkit2gtk-4.1.so.0 (the runtime package); the
+    // unversioned libwebkit2gtk-4.1.so ships only with the -dev package. Without
+    // the versioned names here, is_loaded() fails, get_webkit_library() returns
+    // the non-loaded stub, and eval() (used to resolve bound-call Promises)
+    // silently no-ops. Try the versioned sonames first so eval always works.
+    constexpr std::array<const char *, 4> lib_names{
+        "libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37",
+        "libwebkit2gtk-4.1.so", "libwebkit2gtk-4.0.so"};
     auto found =
         std::find_if(lib_names.begin(), lib_names.end(), [](const char *name) {
           return native_library::is_loaded(name);

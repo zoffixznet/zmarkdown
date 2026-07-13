@@ -1,0 +1,58 @@
+<!-- ZMarkdown window contents. Nim assembles the final document by inlining the
+     stylesheet (with embedded fonts) and the script, so the running page makes
+     no network requests. The STYLE and SCRIPT markers below are where Nim
+     splices those in. -->
+<div id="app" data-view="split">
+  <div id="toolbar">
+    <span class="wordmark"><span class="z">Z</span>Markdown</span>
+
+    <div class="tb-sep"></div>
+
+    <div class="menu-wrap">
+      <button id="btn-file" aria-haspopup="true" aria-expanded="false">File</button>
+      <div id="file-menu" class="menu" role="menu">
+        <button data-action="open" role="menuitem">Open<span class="accel">Ctrl+O</span></button>
+        <button data-action="save" role="menuitem">Save<span class="accel">Ctrl+S</span></button>
+        <button data-action="save-as" role="menuitem">Save As<span class="accel">Ctrl+Shift+S</span></button>
+        <div class="menu-sep"></div>
+        <button data-action="exit" role="menuitem">Exit</button>
+      </div>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="tb-group" role="group" aria-label="Formatting">
+      <button class="icon" id="btn-bold" title="Bold (Ctrl+B)" aria-label="Bold"><b>B</b></button>
+      <button class="icon" id="btn-italic" title="Italic (Ctrl+I)" aria-label="Italic"><i>I</i></button>
+      <button class="icon" id="btn-underline" title="Underline (Ctrl+U)" aria-label="Underline"><u>U</u></button>
+      <button class="icon" id="btn-link" title="Insert link" aria-label="Insert link">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+      </button>
+      <button class="icon" id="btn-image" title="Insert image" aria-label="Insert image">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-9 9"/></svg>
+      </button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="viewmodes" role="group" aria-label="View mode">
+      <button data-view="text" id="vm-text" title="Text only">Text</button>
+      <button data-view="split" id="vm-split" title="Split view" class="active">Split</button>
+      <button data-view="preview" id="vm-preview" title="Preview only">Preview</button>
+    </div>
+
+    <div class="tb-spacer"></div>
+    <span class="doc-title" id="doc-title">Untitled</span>
+  </div>
+
+  <div id="panes">
+    <div id="editor-pane" class="pane">
+      <textarea id="editor" spellcheck="false" placeholder="Write markdown here..."></textarea>
+    </div>
+    <div id="divider" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="Resize panes (arrow keys)"></div>
+    <div id="preview-pane" class="pane">
+      <div id="preview"><div class="reading" id="reading"></div></div>
+    </div>
+  </div>
+</div>
