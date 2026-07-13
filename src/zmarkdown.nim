@@ -35,6 +35,10 @@ const
   fontSerifItalic = staticRead("ui/assets/fonts/source-serif-4-400-italic.woff2")
   fontMono400 = staticRead("ui/assets/fonts/ibm-plex-mono-400.woff2")
   fontMono600 = staticRead("ui/assets/fonts/ibm-plex-mono-600.woff2")
+  # App icon, embedded so the window can set it without shipping a loose file.
+  # Missing at first build (the icon script generates it); guarded so a source
+  # checkout without generated PNGs still compiles by falling back to empty.
+  iconPng = staticRead("ui/assets/icon-128.png")
 
 # ---- Logging ---------------------------------------------------------------
 
@@ -321,6 +325,33 @@ proc bindAll(w: Webview) =
   discard w.bind("requestExit", jsRequestExit)
   discard w.bind("logMsg", jsLog)
 
+proc setWindowIcon(w: Webview) =
+  ## Set the window/taskbar icon from the embedded PNG. Linux only; on Windows
+  ## the icon comes from the .ico compiled into the executable as a resource.
+  ## Wrapped defensively so a failure never stops startup.
+  when defined(linux):
+    if iconPng.len == 0: return
+    try:
+      let win = getWindow(w)
+      if win == nil: return
+      let data = iconPng.cstring
+      let dataLen = iconPng.len.cint
+      {.emit: """
+      GError* _err = NULL;
+      GdkPixbufLoader* _ld = gdk_pixbuf_loader_new();
+      if (_ld) {
+        if (gdk_pixbuf_loader_write(_ld, (const guchar*)`data`, (gsize)`dataLen`, &_err)
+            && gdk_pixbuf_loader_close(_ld, &_err)) {
+          GdkPixbuf* _pb = gdk_pixbuf_loader_get_pixbuf(_ld);
+          if (_pb) gtk_window_set_icon((GtkWindow*)`win`, _pb);
+        }
+        if (_err) g_error_free(_err);
+        g_object_unref(_ld);
+      }
+      """.}
+    except CatchableError:
+      discard
+
 proc setupWindow(debug: bool): Webview =
   let w = newWebview(debug = debug)
   if w == nil:
@@ -328,6 +359,7 @@ proc setupWindow(debug: bool): Webview =
     quit(1)
   app.w = w
   w.title = "ZMarkdown"
+  setWindowIcon(w)
   let (rw, rh) = computeRestoreSize()
   w.size = (rw, rh)
   w.setSize(MinWidth, MinHeight, WebviewHintMin)

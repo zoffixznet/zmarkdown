@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ZMarkdown
+GenericName=Markdown Editor
+Comment=A small, fast markdown editor and viewer
+Exec=zmarkdown %f
+Icon=zmarkdown
+Terminal=false
+Categories=Office;TextEditor;Utility;
+MimeType=text/markdown;text/plain;
+StartupWMClass=ZMarkdown
+Keywords=markdown;editor;text;md;

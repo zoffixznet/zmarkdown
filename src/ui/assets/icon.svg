@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- ZMarkdown app icon: a rounded-square mark in the app's teal accent. A bold
+       Z sits over the familiar downward markdown chevron, so the letter and the
+       markdown motif read as one mark. -->
+  <!-- rounded-square tile in the app's fountain-pen teal accent. A flat fill
+       keeps the mark crisp and renders identically across every rasterizer. -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#10726B"/>
+
+  <!-- subtle inner keyline -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="none"
+        stroke="#ffffff" stroke-opacity="0.10" stroke-width="2"/>
+
+  <!-- The Z: three strokes in a paper-white, drawn as a filled path so it stays
+       crisp at every size. -->
+  <path fill="#FBFBF9" d="M70 66
+    h116 a10 10 0 0 1 10 10 v14 a10 10 0 0 1 -3 7 l-79 79 h72 a10 10 0 0 1 10 10
+    v0 a10 10 0 0 1 -10 10 h-116 a10 10 0 0 1 -10 -10 v-14 a10 10 0 0 1 3 -7
+    l79 -79 h-72 a10 10 0 0 1 -10 -10 v0 a10 10 0 0 1 10 -10 z"/>
+
+  <!-- The markdown downward chevron, echoing the mark on the reference badge,
+       tucked at the lower right in the accent-light. -->
+  <path fill="none" stroke="#7FE3DA" stroke-width="14" stroke-linecap="round"
+        stroke-linejoin="round" d="M150 150 v40 M124 176 l26 26 l26 -26"/>
+</svg>
