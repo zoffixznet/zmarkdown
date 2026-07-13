@@ -48,9 +48,10 @@ make build   # just build the release binary into build/
 make dist    # build and package the Linux tarball
 ```
 
-`make deps` prints exactly what it is about to do before it does it. On Linux it installs
-these system packages with `sudo apt-get` (and shows the full list and the root commands
-before asking for your password, so you can cancel):
+`make deps` prints exactly what it is about to do before it does it. On Linux it first
+checks which of these system packages are already installed and only uses `sudo apt-get`
+for the ones that are missing, showing that list and the exact root commands before asking
+for your password. If they are all already present, it does not ask for sudo at all.
 
 | Package | Why |
 | --- | --- |

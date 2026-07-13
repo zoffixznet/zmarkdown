@@ -8,38 +8,55 @@
 # pinned nimble dependencies. Uses sudo for the system packages.
 set -euo pipefail
 
-# Single source of truth for the system packages, kept next to the descriptions
-# printed below so the two never drift.
-SYSTEM_PKGS=(
-  build-essential
-  pkg-config
-  libgtk-3-dev
-  libwebkit2gtk-4.1-dev
-  zenity
-  xvfb
-  ca-certificates
-  curl
+# System packages ZMarkdown needs, each with a one-line reason. This is the
+# single source of truth; nothing below hardcodes the list again.
+declare -A PKG_DESC=(
+  [build-essential]="C/C++ toolchain (Nim compiles through a C++ backend)"
+  [pkg-config]="finds the GTK and WebKit build and link flags"
+  [libgtk-3-dev]="GTK 3, the toolkit the Linux webview is built on"
+  [libwebkit2gtk-4.1-dev]="WebKitGTK 4.1, renders the markdown preview"
+  [zenity]="native file dialog fallback (KDE already ships kdialog)"
+  [xvfb]="virtual display, used only by 'make test'"
+  [ca-certificates]="trusted CA roots for the HTTPS downloads below"
+  [curl]="fetches the Nim toolchain over HTTPS"
 )
+# Fixed order so the output is stable run to run.
+SYSTEM_PKGS=(build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev zenity xvfb ca-certificates curl)
 
-echo "==> System packages to install with sudo (apt):"
-echo "      build-essential         C/C++ toolchain (Nim compiles through a C++ backend)"
-echo "      pkg-config              finds the GTK and WebKit build and link flags"
-echo "      libgtk-3-dev            GTK 3, the toolkit the Linux webview is built on"
-echo "      libwebkit2gtk-4.1-dev   WebKitGTK 4.1, renders the markdown preview"
-echo "      zenity                  native file dialog fallback (KDE already ships kdialog)"
-echo "      xvfb                    virtual display, used only by 'make test'"
-echo "      ca-certificates, curl   fetch the Nim toolchain over HTTPS"
-echo
-echo "    Commands that will run as root:"
-echo "      sudo apt-get update"
-echo "      sudo apt-get install -y --no-install-recommends ${SYSTEM_PKGS[*]}"
-echo
-echo "    Nim and the Nim libraries install per-user under ~/.nimble (no sudo)."
-echo "    You will be asked for your password now. Press Ctrl-C to cancel."
-echo
+# Only elevate for what is actually missing. dpkg-query tells us what is already
+# installed, so an already-set-up system never gets a sudo prompt at all.
+present=()
+missing=()
+for pkg in "${SYSTEM_PKGS[@]}"; do
+  if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+    present+=("$pkg")
+  else
+    missing+=("$pkg")
+  fi
+done
 
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends "${SYSTEM_PKGS[@]}"
+if [ "${#present[@]}" -gt 0 ]; then
+  echo "==> Already installed, skipping: ${present[*]}"
+fi
+
+if [ "${#missing[@]}" -eq 0 ]; then
+  echo "==> All required system packages are already present. No sudo needed."
+else
+  echo
+  echo "==> Need to install these with sudo (apt):"
+  for pkg in "${missing[@]}"; do
+    printf '      %-24s %s\n' "$pkg" "${PKG_DESC[$pkg]}"
+  done
+  echo
+  echo "    Commands that will run as root:"
+  echo "      sudo apt-get update"
+  echo "      sudo apt-get install -y --no-install-recommends ${missing[*]}"
+  echo
+  echo "    You will be asked for your password now. Press Ctrl-C to cancel."
+  echo
+  sudo apt-get update
+  sudo apt-get install -y --no-install-recommends "${missing[@]}"
+fi
 
 # Nim via choosenim (per-user, no sudo). The distro nim package is often too old.
 if ! command -v nim >/dev/null 2>&1; then
