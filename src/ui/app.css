@@ -33,7 +33,7 @@
 
   --reading-size: 1.125rem;
   --reading-leading: 1.7;
-  --measure: 68ch;
+  --measure: 136ch;
 }
 
 @media (prefers-color-scheme: dark) {
