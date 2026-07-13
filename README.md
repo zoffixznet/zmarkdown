@@ -139,6 +139,82 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
 
 ## License
 
-The application is MIT licensed. The bundled fonts, Source Serif 4 and IBM Plex Mono, are
-under the SIL Open Font License 1.1; their license texts are in
-`src/ui/assets/fonts/`.
+ZMarkdown's own code is under the MIT License; the full text is in the `LICENSE` file at
+the repository root. It builds on the third-party components below, which keep their own
+licenses. Their notices are reproduced here in full.
+
+### webview (C/C++ library, used for the Linux and Windows UI)
+
+```
+MIT License
+
+Copyright (c) 2017 Serge Zaitsev
+Copyright (c) 2022 Steffen André Langnes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### neroist/webview (Nim binding, vendored under `src/vendor/webview/`)
+
+```
+Copyright 2023 neroist
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights to use, copy,
+modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### Fonts: Source Serif 4 and IBM Plex Mono (bundled, used in the UI)
+
+Both are under the SIL Open Font License, Version 1.1. Their copyright and reserved font
+name notices:
+
+```
+Copyright 2014 - 2023 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+Copyright (c) 2017 IBM Corp. with Reserved Font Name "Plex".
+```
+
+The complete OFL-1.1 text for each ships alongside the fonts in
+`src/ui/assets/fonts/LICENSE-SourceSerif4.txt` and
+`src/ui/assets/fonts/LICENSE-IBMPlexMono.txt`.
+
+### Microsoft WebView2 SDK (Windows build only, not bundled)
+
+The Windows build compiles against the Microsoft WebView2 SDK, which is Microsoft's and
+comes under Microsoft's own license terms. It is not stored in this repository; it is
+downloaded from Microsoft's official NuGet package at build time (see "The Microsoft
+WebView2 SDK is fetched, not bundled" above). The runtime it targets is part of Windows 11.
+
+### Statically linked into the prebuilt binaries
+
+- `markdown` (Nim package): MIT License.
+- `tinyfiledialogs` (Nim package and C library): zlib License.
