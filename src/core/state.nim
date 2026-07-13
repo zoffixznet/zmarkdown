@@ -23,6 +23,7 @@ type
     splitRatio*: float    ## divider position in split mode, 0.0 .. 1.0
     fontChoice*: string   ## settings: font key ("" = the built-in per-pane fonts)
     bgColor*: string      ## settings: background color hex ("" = theme default)
+    textColor*: string    ## settings: text color hex ("" = theme default)
 
 const
   # Sane minimums so a tiny saved size cannot make the window unusable.
@@ -45,6 +46,7 @@ func defaultState*(): UiState =
     splitRatio: DefaultSplitRatio,
     fontChoice: "",
     bgColor: "",
+    textColor: "",
   )
 
 func clampRatio*(r: float): float =
@@ -116,6 +118,7 @@ func toJson*(s: UiState): JsonNode =
     "splitRatio": s.splitRatio,
     "fontChoice": s.fontChoice,
     "bgColor": s.bgColor,
+    "textColor": s.textColor,
   }
 
 func parseState*(node: JsonNode): UiState =
@@ -134,6 +137,8 @@ func parseState*(node: JsonNode): UiState =
     result.fontChoice = node["fontChoice"].getStr()
   if node.hasKey("bgColor") and node["bgColor"].kind == JString:
     result.bgColor = node["bgColor"].getStr()
+  if node.hasKey("textColor") and node["textColor"].kind == JString:
+    result.textColor = node["textColor"].getStr()
   if node.hasKey("view") and node["view"].kind == JString:
     case node["view"].getStr()
     of "text": result.view = vmText

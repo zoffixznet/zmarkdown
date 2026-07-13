@@ -71,6 +71,19 @@
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   }
 
+  // Open links in the rendered preview in the system browser rather than letting
+  // them navigate the app's own webview away. #reading persists across renders,
+  // so one delegated handler covers every rendered link.
+  reading.addEventListener("click", (ev) => {
+    const a = ev.target.closest("a[href]");
+    if (!a) return;
+    const href = a.getAttribute("href") || "";
+    if (/^https?:/i.test(href)) {
+      ev.preventDefault();
+      try { if (window.openExternal) window.openExternal(href); } catch (e) {}
+    }
+  });
+
   /* ---- Dirty / title --------------------------------------------------- */
 
   let baseTitle = "Untitled";
@@ -179,6 +192,9 @@
       b.classList.toggle("active", b.getAttribute("data-view") === view);
     }
     if (view === "split") applyRatio();
+    // In Text/Preview the per-view CSS controls the panes, so clear the inline
+    // flex that split mode set (otherwise a collapsed editor stays collapsed).
+    else { editorPane.style.flex = ""; previewPane.style.flex = ""; }
     if (persist !== false) persist_state();
   }
 
@@ -282,7 +298,16 @@
 
   async function doFileAction(action) {
     try {
-      if (action === "open") {
+      if (action === "new") {
+        const res = await window.menuNew(dirty, editor.value);
+        if (res && res.ok) {
+          editor.value = "";
+          setTitle(res.title, false);
+          await doRender();
+          await resetHistory("");
+          editor.focus();
+        }
+      } else if (action === "open") {
         const res = await window.menuOpen(dirty, editor.value);
         if (res && res.opened) {
           editor.value = res.text;
@@ -338,6 +363,7 @@
     else if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
+    else if (k === "n") { ev.preventDefault(); doFileAction("new"); }
   });
 
   // Also catch accelerators when focus is not in the editor.
@@ -352,6 +378,7 @@
     else if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
+    else if (k === "n") { ev.preventDefault(); doFileAction("new"); }
   });
 
   /* ---- Settings (font + background, for both panes) -------------------- */
@@ -359,8 +386,10 @@
   const settingsOverlay = $("settings-overlay");
   const setFont = $("set-font");
   const setBg = $("set-bg");
+  const setFg = $("set-fg");
   let fontChoice = "";
   let bgColor = "";
+  let textColor = "";
 
   const FONT_FAMILIES = {
     "": null, // default: keep the built-in serif preview / mono editor
@@ -382,17 +411,23 @@
     const root = document.documentElement.style;
     if (hex) root.setProperty("--paper", hex); else root.removeProperty("--paper");
   }
-  function applySettings() { applyFont(fontChoice); applyBg(bgColor); }
-  function persistSettings() {
-    try { if (window.saveSettings) window.saveSettings(fontChoice, bgColor); } catch (e) {}
+  function applyFg(hex) {
+    // Scoped to the editor and preview only (not the toolbar) via --content-ink.
+    const root = document.documentElement.style;
+    if (hex) root.setProperty("--content-ink", hex); else root.removeProperty("--content-ink");
   }
-  function currentPaperHex() {
-    return (getComputedStyle(document.documentElement).getPropertyValue("--paper").trim()) || "#EDEBE4";
+  function applySettings() { applyFont(fontChoice); applyBg(bgColor); applyFg(textColor); }
+  function persistSettings() {
+    try { if (window.saveSettings) window.saveSettings(fontChoice, bgColor, textColor); } catch (e) {}
+  }
+  function cssVarHex(name, fallback) {
+    return (getComputedStyle(document.documentElement).getPropertyValue(name).trim()) || fallback;
   }
 
   function openSettings() {
     if (setFont) setFont.value = (fontChoice in FONT_FAMILIES) ? fontChoice : "";
-    if (setBg) setBg.value = bgColor || currentPaperHex();
+    if (setBg) setBg.value = bgColor || cssVarHex("--paper", "#EDEBE4");
+    if (setFg) setFg.value = textColor || cssVarHex("--ink", "#1A1D24");
     settingsOverlay.hidden = false;
   }
   function closeSettings() { settingsOverlay.hidden = true; }
@@ -403,10 +438,14 @@
   if (setBg) setBg.addEventListener("input", () => {
     bgColor = setBg.value; applyBg(bgColor); persistSettings();
   });
+  if (setFg) setFg.addEventListener("input", () => {
+    textColor = setFg.value; applyFg(textColor); persistSettings();
+  });
   $("set-reset").addEventListener("click", () => {
-    fontChoice = ""; bgColor = ""; applySettings(); persistSettings();
+    fontChoice = ""; bgColor = ""; textColor = ""; applySettings(); persistSettings();
     if (setFont) setFont.value = "";
-    if (setBg) setBg.value = currentPaperHex();
+    if (setBg) setBg.value = cssVarHex("--paper", "#EDEBE4");
+    if (setFg) setFg.value = cssVarHex("--ink", "#1A1D24");
   });
   $("set-close").addEventListener("click", closeSettings);
   settingsOverlay.addEventListener("mousedown", (ev) => { if (ev.target === settingsOverlay) closeSettings(); });
@@ -449,7 +488,12 @@
     }, true);
     // Suppress the browser's own middle-click behavior (native autoscroll/paste).
     scroller.addEventListener("auxclick", (ev) => { if (ev.button === 1) ev.preventDefault(); });
-    window.addEventListener("mousemove", (ev) => { if (active) { curX = ev.clientX; curY = ev.clientY; } });
+    window.addEventListener("mousemove", (ev) => {
+      if (!active) return;
+      curX = ev.clientX; curY = ev.clientY;
+      // The round marker follows the mouse (the real cursor is hidden while active).
+      if (marker) { marker.style.left = curX + "px"; marker.style.top = curY + "px"; }
+    });
     window.addEventListener("keydown", stop, true);
     window.addEventListener("wheel", stop, { passive: true });
     window.addEventListener("blur", stop);
@@ -461,10 +505,13 @@
     try {
       const st = await window.loadInitialState();
       if (st) {
-        if (typeof st.splitRatio === "number") splitRatio = st.splitRatio;
+        // Clamp the restored divider so neither pane launches fully collapsed
+        // (you can still drag it all the way during a session).
+        if (typeof st.splitRatio === "number") splitRatio = Math.max(0.1, Math.min(0.9, st.splitRatio));
         if (st.view) currentView = st.view;
         if (typeof st.fontChoice === "string") fontChoice = st.fontChoice;
         if (typeof st.bgColor === "string") bgColor = st.bgColor;
+        if (typeof st.textColor === "string") textColor = st.textColor;
       }
     } catch (e) { log("loadInitialState failed: " + e); }
     applySettings();

@@ -148,11 +148,11 @@ with a readable Python-like syntax that produces small, dependency-light native 
 It is not as widely known as it deserves to be; if you are curious, these are good starting
 points:
 
-- Website and downloads: https://nim-lang.org
-- Learn Nim (tutorials and guides): https://nim-lang.org/learn.html
-- Documentation and standard library: https://nim-lang.org/documentation.html
-- Community forum: https://forum.nim-lang.org
-- Source code: https://github.com/nim-lang/Nim
+- Website and downloads: [nim-lang.org](https://nim-lang.org)
+- Learn Nim (tutorials and guides): [nim-lang.org/learn.html](https://nim-lang.org/learn.html)
+- Documentation and standard library: [nim-lang.org/documentation.html](https://nim-lang.org/documentation.html)
+- Community forum: [forum.nim-lang.org](https://forum.nim-lang.org)
+- Source code: [github.com/nim-lang/Nim](https://github.com/nim-lang/Nim)
 
 ## License
 

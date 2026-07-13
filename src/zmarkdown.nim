@@ -5,7 +5,7 @@
 ## transforms, markdown rendering, file IO, dialogs, state) is Nim, reached from
 ## the page through bound procs. The webview is only the display.
 
-import std/[json, os, times, strutils, base64, options]
+import std/[json, os, times, strutils, base64, options, browsers]
 import std/atomics
 
 import webview
@@ -233,11 +233,12 @@ proc jsPersistState(id: string; req: JsonNode): string =
   result = "true"
 
 proc jsSaveSettings(id: string; req: JsonNode): string =
-  ## saveSettings(fontChoice, bgColor). Updates the in-memory settings; the disk
-  ## write happens on exit like the other UI state.
+  ## saveSettings(fontChoice, bgColor, textColor). Updates the in-memory settings;
+  ## the disk write happens on exit like the other UI state.
   try:
     if req.len >= 1 and req[0].kind == JString: app.ui.fontChoice = req[0].getStr()
     if req.len >= 2 and req[1].kind == JString: app.ui.bgColor = req[1].getStr()
+    if req.len >= 3 and req[2].kind == JString: app.ui.textColor = req[2].getStr()
   except CatchableError:
     discard
   result = "true"
@@ -344,6 +345,29 @@ proc jsMenuOpen(id: string; req: JsonNode): string =
   let r = doOpen(text)
   $ %*{"opened": r.opened, "text": r.content, "title": r.title}
 
+proc jsMenuNew(id: string; req: JsonNode): string =
+  ## menuNew(dirty, text) -> {ok, title}. Guards unsaved changes, then starts a
+  ## fresh empty document and forgets the current file path.
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let text = if req.len > 1: req[1].getStr() else: ""
+  if not guardUnsaved(dirty, text):
+    return $ %*{"ok": false}
+  app.currentPath = ""
+  logLine("new document")
+  $ %*{"ok": true, "title": docName()}
+
+proc jsOpenExternal(id: string; req: JsonNode): string =
+  ## openExternal(url). Opens an http(s) URL in the system browser so a link in
+  ## the preview does not navigate the app's own webview away.
+  try:
+    if req.len > 0 and req[0].kind == JString:
+      let url = req[0].getStr()
+      if url.startsWith("http://") or url.startsWith("https://"):
+        openDefaultBrowser(url)
+  except CatchableError as e:
+    vlog("openExternal failed: " & e.msg)
+  result = "true"
+
 proc jsMenuSave(id: string; req: JsonNode): string =
   let text = if req.len > 0: req[0].getStr() else: ""
   let r = doSave(text)
@@ -444,6 +468,8 @@ proc bindAll(w: Webview) =
   discard w.bind("persistState", jsPersistState)
   discard w.bind("saveSettings", jsSaveSettings)
   discard w.bind("menuOpen", jsMenuOpen)
+  discard w.bind("menuNew", jsMenuNew)
+  discard w.bind("openExternal", jsOpenExternal)
   discard w.bind("menuSave", jsMenuSave)
   discard w.bind("menuSaveAs", jsMenuSaveAs)
   discard w.bind("requestExit", jsRequestExit)

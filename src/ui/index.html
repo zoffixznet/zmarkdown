@@ -11,6 +11,7 @@
     <div class="menu-wrap">
       <button id="btn-file" aria-haspopup="true" aria-expanded="false">File</button>
       <div id="file-menu" class="menu" role="menu">
+        <button data-action="new" role="menuitem">New<span class="accel">Ctrl+N</span></button>
         <button data-action="open" role="menuitem">Open<span class="accel">Ctrl+O</span></button>
         <button data-action="save" role="menuitem">Save<span class="accel">Ctrl+S</span></button>
         <button data-action="save-as" role="menuitem">Save As<span class="accel">Ctrl+Shift+S</span></button>
@@ -82,6 +83,10 @@
           <option value="sysserif">System serif</option>
           <option value="mono">System monospace</option>
         </select>
+      </div>
+      <div class="dlg-row">
+        <label for="set-fg">Font color</label>
+        <input type="color" id="set-fg" value="#1A1D24">
       </div>
       <div class="dlg-row">
         <label for="set-bg">Background color</label>
