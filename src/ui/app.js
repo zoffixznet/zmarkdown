@@ -352,6 +352,49 @@
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
   });
 
+  /* ---- Middle-click autoscroll (like a Windows browser) ---------------- */
+
+  (function initAutoscroll() {
+    const scroller = preview; // #preview is the scroll container
+    const marker = $("autoscroll-marker");
+    let active = false, anchorX = 0, anchorY = 0, curX = 0, curY = 0, raf = null;
+
+    function frame() {
+      if (!active) return;
+      const dead = 12, factor = 0.14;
+      const dy = curY - anchorY, dx = curX - anchorX;
+      if (Math.abs(dy) > dead) scroller.scrollTop += (dy - Math.sign(dy) * dead) * factor;
+      if (Math.abs(dx) > dead) scroller.scrollLeft += (dx - Math.sign(dx) * dead) * factor;
+      raf = requestAnimationFrame(frame);
+    }
+    function start(x, y) {
+      active = true; anchorX = curX = x; anchorY = curY = y;
+      if (marker) { marker.style.left = x + "px"; marker.style.top = y + "px"; marker.classList.add("active"); }
+      document.body.classList.add("autoscrolling");
+      raf = requestAnimationFrame(frame);
+    }
+    function stop() {
+      if (!active) return;
+      active = false;
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      if (marker) marker.classList.remove("active");
+      document.body.classList.remove("autoscrolling");
+    }
+
+    // While active, any mouse press exits. Otherwise a middle press inside the
+    // preview starts it. Capture phase so we win before default handling.
+    document.addEventListener("mousedown", (ev) => {
+      if (active) { ev.preventDefault(); stop(); return; }
+      if (ev.button === 1 && scroller.contains(ev.target)) { ev.preventDefault(); start(ev.clientX, ev.clientY); }
+    }, true);
+    // Suppress the browser's own middle-click behavior (native autoscroll/paste).
+    scroller.addEventListener("auxclick", (ev) => { if (ev.button === 1) ev.preventDefault(); });
+    window.addEventListener("mousemove", (ev) => { if (active) { curX = ev.clientX; curY = ev.clientY; } });
+    window.addEventListener("keydown", stop, true);
+    window.addEventListener("wheel", stop, { passive: true });
+    window.addEventListener("blur", stop);
+  })();
+
   /* ---- Startup --------------------------------------------------------- */
 
   async function boot() {
