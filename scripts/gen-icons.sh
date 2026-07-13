@@ -35,6 +35,13 @@ render() { # render <size> <outfile>
 
 echo "Rendering PNG sizes..."
 for s in "${sizes[@]}"; do
+  # icon-128.png is committed and embedded into the binary. The rasterizer is
+  # not byte-deterministic, so leave an existing 128 in place to avoid churning
+  # the tracked file; pass FORCE_ICON_128=1 to regenerate it deliberately.
+  if [[ "$s" == "128" && -f "$out/icon-128.png" && "${FORCE_ICON_128:-0}" != "1" ]]; then
+    echo "  icon-128.png (kept)"
+    continue
+  fi
   render "$s" "$out/icon-${s}.png"
   echo "  icon-${s}.png"
 done
