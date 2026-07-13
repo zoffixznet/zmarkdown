@@ -353,6 +353,14 @@
     return p;
   }
 
+  async function loadIntoEditor(text, title) {
+    editor.value = text;
+    setTitle(title, false);
+    await doRender();
+    await resetHistory(editor.value);
+    editor.focus();
+  }
+
   // Always take over drops over the window. Otherwise the webview navigates to a
   // dropped file (replacing the whole app with the raw file) or the editor
   // inserts the file:// URL. preventDefault on dragenter/dragover is required for
@@ -363,18 +371,33 @@
     ev.preventDefault();
     const dt = ev.dataTransfer;
     if (!dt) return;
-    const path = fileUrlToPath(pathFromDrop(dt));
-    if (!path) { log("drop: no file path in the drop"); return; }
     try {
-      const res = await window.openPath(dirty, editor.value, path);
-      if (res && res.opened) {
-        editor.value = res.text;
-        setTitle(res.title, false);
-        await doRender();
-        await resetHistory(editor.value);
-        editor.focus();
-      }
-    } catch (e) { log("drop open failed: " + e); }
+      log("drop: types=[" + Array.from(dt.types || []).join(",") +
+          "] files=" + (dt.files ? dt.files.length : 0));
+    } catch (e) {}
+    // 1. A real filesystem path (best: Save then writes back to it).
+    let path = fileUrlToPath(pathFromDrop(dt));
+    if (!path && dt.files && dt.files.length && dt.files[0].path) path = dt.files[0].path;
+    if (path) {
+      log("drop: opening path " + path);
+      try {
+        const res = await window.openPath(dirty, editor.value, path);
+        if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      } catch (e) { log("drop openPath failed: " + e); }
+      return;
+    }
+    // 2. Fallback: read the dropped file's content directly (no path available).
+    if (dt.files && dt.files.length) {
+      try {
+        const file = dt.files[0];
+        const text = await file.text();
+        log("drop: loading content of " + (file.name || "?") + " (" + text.length + " chars)");
+        const res = await window.loadDropped(dirty, editor.value, file.name || "");
+        if (res && res.ok) await loadIntoEditor(text, res.title);
+      } catch (e) { log("drop content read failed: " + e); }
+      return;
+    }
+    log("drop: nothing usable (no path, no files)");
   });
 
   /* ---- Toolbar buttons ------------------------------------------------- */

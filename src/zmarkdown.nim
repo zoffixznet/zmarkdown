@@ -375,6 +375,20 @@ proc jsOpenPath(id: string; req: JsonNode): string =
   logLine("opened (drop) " & path)
   $ %*{"opened": true, "text": r.value, "title": docName()}
 
+proc jsLoadDropped(id: string; req: JsonNode): string =
+  ## loadDropped(dirty, currentText, name) -> {ok, title}. Used when a dropped
+  ## file gives us its content but no path (JS reads the content and sets the
+  ## editor). Guards unsaved changes and starts a fresh unsaved document, so Save
+  ## does not overwrite an unrelated file.
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let curText = if req.len > 1: req[1].getStr() else: ""
+  let name = if req.len > 2 and req[2].kind == JString: req[2].getStr() else: ""
+  if not guardUnsaved(dirty, curText):
+    return $ %*{"ok": false}
+  app.currentPath = ""
+  logLine("loaded dropped content" & (if name.len > 0: " (" & name & ")" else: ""))
+  $ %*{"ok": true, "title": (if name.len > 0: name else: "Untitled")}
+
 proc jsOpenExternal(id: string; req: JsonNode): string =
   ## openExternal(url). Opens an http(s) URL in the system browser so a link in
   ## the preview does not navigate the app's own webview away.
@@ -489,6 +503,7 @@ proc bindAll(w: Webview) =
   discard w.bind("menuOpen", jsMenuOpen)
   discard w.bind("menuNew", jsMenuNew)
   discard w.bind("openPath", jsOpenPath)
+  discard w.bind("loadDropped", jsLoadDropped)
   discard w.bind("openExternal", jsOpenExternal)
   discard w.bind("menuSave", jsMenuSave)
   discard w.bind("menuSaveAs", jsMenuSaveAs)
@@ -582,7 +597,8 @@ proc runSelfTest(): int =
       let editBold = r{"editBold"}.getStr()
       let undoText = r{"undoText"}.getStr()
       let dropText = r{"dropText"}.getStr()
-      let dropHandler = r{"dropHandler"}.getStr()
+      let dropUri = r{"dropUri"}.getStr()
+      let dropFile = r{"dropFile"}.getStr()
       logLine("self-test: preview length " & $html.len)
       if not html.contains("<h1"): failures.add("missing <h1>")
       if not html.contains("<strong>"): failures.add("missing <strong>")
@@ -595,11 +611,16 @@ proc runSelfTest(): int =
       if not editBold.contains("**sel**"): failures.add("bold transform failed (got '" & editBold & "')")
       if undoText != "start": failures.add("undo did not restore prior text (got '" & undoText & "')")
       if not dropText.contains("dropped body"): failures.add("openPath did not return file content (got '" & dropText & "')")
-      # The drop handler should have opened the temp file into the editor.
-      if dropHandler.startsWith("ERR:"):
-        logLine("self-test: note: synthetic drop unsupported here (" & dropHandler & ")")
-      elif not dropHandler.contains("dropped body"):
-        failures.add("drop handler did not open the dropped file (got '" & dropHandler & "')")
+      # Drop handler, uri-list form: opens the temp file through a path.
+      if dropUri.startsWith("ERR:"):
+        logLine("self-test: note: uri-list drop unsupported here (" & dropUri & ")")
+      elif not dropUri.contains("dropped body"):
+        failures.add("uri-list drop did not open the file (got '" & dropUri & "')")
+      # Drop handler, File form: reads the content directly (the WebKitGTK case).
+      if dropFile.startsWith("ERR:"):
+        logLine("self-test: note: File drop unsupported here (" & dropFile & ")")
+      elif not dropFile.contains("dropped file body"):
+        failures.add("File drop did not load the content (got '" & dropFile & "')")
     except CatchableError as e:
       failures.add("report parse error: " & e.msg)
     app.exiting = true
@@ -633,21 +654,32 @@ proc runSelfTest(): int =
         var undoText = (u && u.ok) ? u.text : "";
         var op = await window.openPath(false, "", window.__zmDropPath);
         var dropText = (op && op.opened) ? op.text : "";
-        // Exercise the real drop handler with a synthetic file drop.
-        var dropHandler = "";
-        try {
+        // Exercise the real drop handler two ways: a uri-list drop (opens via a
+        // path) and a File drop (the WebKitGTK case: read the content directly).
+        function synthDrop(dt) {
           window.__zm.markClean();
           document.getElementById("editor").value = "BEFORE_DROP";
-          var dt = new DataTransfer();
-          dt.setData("text/uri-list", "file://" + encodeURI(window.__zmDropPath));
           document.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
-          await new Promise(function (r) { setTimeout(r, 600); });
-          dropHandler = document.getElementById("editor").value;
-        } catch (e) { dropHandler = "ERR:" + e; }
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropHandler: dropHandler });
+        }
+        var dropUri = "", dropFile = "";
+        try {
+          var dtu = new DataTransfer();
+          dtu.setData("text/uri-list", "file://" + encodeURI(window.__zmDropPath));
+          synthDrop(dtu);
+          await new Promise(function (r) { setTimeout(r, 500); });
+          dropUri = document.getElementById("editor").value;
+        } catch (e) { dropUri = "ERR:" + e; }
+        try {
+          var dtf = new DataTransfer();
+          dtf.items.add(new File(["dropped file body\n"], "dropped.md", { type: "text/markdown" }));
+          synthDrop(dtf);
+          await new Promise(function (r) { setTimeout(r, 500); });
+          dropFile = document.getElementById("editor").value;
+        } catch (e) { dropFile = "ERR:" + e; }
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropHandler: '' });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '' });
       }
     });
   })();
