@@ -404,6 +404,16 @@
     let path = fileUrlToPath(uri);
     if (!path && fileCount && dt.files[0].path) path = dt.files[0].path;
 
+    // The drag often carries an HTML <a>. Log its href and accept it as a path,
+    // whether it is a file:// URL or a bare absolute path.
+    const hrefM = (g["text/html"] || "").match(/href\s*=\s*["']([^"']*)["']/i);
+    log("drop html href=[" + (hrefM ? hrefM[1] : "NONE") + "] htmlLen=" + (g["text/html"] || "").length);
+    if (!path && hrefM && hrefM[1]) {
+      const h = hrefM[1].trim();
+      if (/^file:\/\//i.test(h)) path = fileUrlToPath(h);
+      else if (h[0] === "/") { try { path = decodeURIComponent(h); } catch (e) { path = h; } }
+    }
+
     if (path) { openDroppedPath(path); return; }
     if (fileCount) { openDroppedFile(dt.files[0]); return; }
 
