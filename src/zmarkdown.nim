@@ -65,9 +65,22 @@ extern "C" int zmGetWinMax(void) { return zmWinMax; }
    view widget, where GTK delivers the file URIs, and pass the local path to a
    Nim callback. */
 typedef void (*zm_drop_cb)(const char*);
+/* A file drag merely passing over the window makes WebKit request the drop data
+   during drag-motion, which would load the file before the user actually drops
+   it. Only act on a real drop: the drag-drop signal (fired on release) sets this
+   flag, and drag-data-received ignores any data delivered without it. */
+static int zm_drop_pending = 0;
+static gboolean zm_on_drag_drop(GtkWidget* w, GdkDragContext* ctx, gint x, gint y,
+                                guint t, gpointer u) {
+  (void)w; (void)ctx; (void)x; (void)y; (void)t; (void)u;
+  zm_drop_pending = 1;
+  return FALSE; /* let the default handler fetch the data (fires drag-data-received) */
+}
 static void zm_on_drop_data(GtkWidget* w, GdkDragContext* ctx, gint x, gint y,
                             GtkSelectionData* data, guint info, guint t, gpointer cb) {
   (void)x; (void)y; (void)info;
+  if (!zm_drop_pending) return; /* data requested during drag-motion, not a drop */
+  zm_drop_pending = 0;
   gchar** uris = gtk_selection_data_get_uris(data);
   gboolean ok = FALSE;
   if (uris && uris[0]) {
@@ -88,6 +101,7 @@ extern "C" void zmSetupDrop(void* window, void* cb) {
   target.flags = 0;
   target.info = 0;
   gtk_drag_dest_set(target_widget, GTK_DEST_DEFAULT_ALL, &target, 1, GDK_ACTION_COPY);
+  g_signal_connect(target_widget, "drag-drop", G_CALLBACK(zm_on_drag_drop), NULL);
   g_signal_connect(target_widget, "drag-data-received", G_CALLBACK(zm_on_drop_data), cb);
 }
 """.}
