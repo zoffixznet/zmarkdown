@@ -15,6 +15,8 @@
         <button data-action="save" role="menuitem">Save<span class="accel">Ctrl+S</span></button>
         <button data-action="save-as" role="menuitem">Save As<span class="accel">Ctrl+Shift+S</span></button>
         <div class="menu-sep"></div>
+        <button data-action="settings" role="menuitem">Settings</button>
+        <div class="menu-sep"></div>
         <button data-action="exit" role="menuitem">Exit</button>
       </div>
     </div>
@@ -64,6 +66,32 @@
          aria-label="Resize panes (arrow keys)"></div>
     <div id="preview-pane" class="pane">
       <div id="preview"><div class="reading" id="reading"></div></div>
+    </div>
+  </div>
+
+  <div id="settings-overlay" hidden>
+    <div id="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="dlg-head">Settings</div>
+      <div class="dlg-row">
+        <label for="set-font">Font</label>
+        <select id="set-font">
+          <option value="">Default (serif preview, mono editor)</option>
+          <option value="serif4">Source Serif 4</option>
+          <option value="plex">IBM Plex Mono</option>
+          <option value="sans">System sans-serif</option>
+          <option value="sysserif">System serif</option>
+          <option value="mono">System monospace</option>
+        </select>
+      </div>
+      <div class="dlg-row">
+        <label for="set-bg">Background color</label>
+        <input type="color" id="set-bg" value="#EDEBE4">
+      </div>
+      <div class="dlg-note">Applies to both the editor and the preview.</div>
+      <div class="dlg-buttons">
+        <button id="set-reset" type="button">Reset to defaults</button>
+        <button id="set-close" type="button" class="primary">Close</button>
+      </div>
     </div>
   </div>
 

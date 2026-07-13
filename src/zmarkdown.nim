@@ -232,6 +232,16 @@ proc jsPersistState(id: string; req: JsonNode): string =
     discard
   result = "true"
 
+proc jsSaveSettings(id: string; req: JsonNode): string =
+  ## saveSettings(fontChoice, bgColor). Updates the in-memory settings; the disk
+  ## write happens on exit like the other UI state.
+  try:
+    if req.len >= 1 and req[0].kind == JString: app.ui.fontChoice = req[0].getStr()
+    if req.len >= 2 and req[1].kind == JString: app.ui.bgColor = req[1].getStr()
+  except CatchableError:
+    discard
+  result = "true"
+
 proc captureWindowState(): tuple[w, h, maximized: int] =
   ## Read the window's current non-maximized size and whether it is maximized, so
   ## exit persists what the user actually has now. Falls back to the stored values
@@ -432,6 +442,7 @@ proc bindAll(w: Webview) =
   discard w.bind("applyEdit", jsApplyEdit)
   discard w.bind("loadInitialState", jsLoadInitialState)
   discard w.bind("persistState", jsPersistState)
+  discard w.bind("saveSettings", jsSaveSettings)
   discard w.bind("menuOpen", jsMenuOpen)
   discard w.bind("menuSave", jsMenuSave)
   discard w.bind("menuSaveAs", jsMenuSaveAs)

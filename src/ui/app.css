@@ -12,17 +12,17 @@
 /* FONT_FACES */
 
 :root {
-  /* Light palette (default and fallback). Cool, not warm: deliberately avoids
-   * the cream-and-terracotta AI default. */
-  --paper: #FBFBF9;         /* cool near-white */
-  --ink: #1A1D24;           /* cool near-black */
+  /* Light palette (default and fallback). A soft off-white, deliberately not a
+   * bright near-white, with an off-black ink. */
+  --paper: #EDEBE4;         /* soft off-white */
+  --ink: #1A1D24;           /* off-black */
   --ink-soft: #565B66;      /* secondary ink */
-  --rule: #E2E4E1;          /* hairline rules */
+  --rule: #DCDAD1;          /* hairline rules */
   --accent: #10726B;        /* fountain-pen teal */
   --accent-soft: rgba(16, 114, 107, 0.10);
-  --panel: #F3F4F1;         /* code panel / chip fill */
+  --panel: #E4E2D9;         /* code panel / chip fill */
   --panel-ink: #2C3038;
-  --chrome: #F4F5F2;        /* toolbar background */
+  --chrome: #E7E5DC;        /* toolbar background */
   --chrome-ink: #3A3F49;
   --shadow: rgba(20, 23, 30, 0.08);
   --sel: rgba(16, 114, 107, 0.18);
@@ -329,6 +329,46 @@ button.icon svg { width: 16px; height: 16px; display: block; }
 #autoscroll-marker .arr { fill: var(--ink-soft); }
 body.autoscrolling, body.autoscrolling * { cursor: all-scroll !important; }
 body.autoscrolling { user-select: none; -webkit-user-select: none; }
+
+/* ---- Settings dialog --------------------------------------------------- */
+#settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 23, 30, 0.35);
+}
+#settings-overlay[hidden] { display: none; }
+#settings-dialog {
+  background: var(--chrome);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px var(--shadow);
+  width: min(420px, 92vw);
+  padding: 1.2rem 1.3rem 1.1rem;
+  font-family: var(--sans);
+}
+#settings-dialog .dlg-head { font-size: 1.05rem; font-weight: 600; color: var(--ink); margin-bottom: 1rem; }
+#settings-dialog .dlg-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; margin-bottom: 0.85rem;
+}
+#settings-dialog label { color: var(--chrome-ink); font-size: 0.9rem; }
+#settings-dialog select {
+  font-family: var(--sans); font-size: 0.9rem; padding: 0.35rem 0.5rem;
+  border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); color: var(--ink); min-width: 13rem;
+}
+#settings-dialog input[type="color"] {
+  width: 46px; height: 30px; padding: 0; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 6px; background: var(--paper);
+}
+#settings-dialog .dlg-note { font-size: 0.8rem; color: var(--ink-soft); margin: 0.2rem 0 1rem; }
+#settings-dialog .dlg-buttons { display: flex; justify-content: flex-end; gap: 0.6rem; }
+#settings-dialog .dlg-buttons button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+#settings-dialog .dlg-buttons button.primary:hover { filter: brightness(1.06); color: #fff; }
 
 .reading {
   font-family: var(--serif);

@@ -297,6 +297,8 @@
       } else if (action === "save-as") {
         const res = await window.menuSaveAs(editor.value);
         if (res && res.saved) setTitle(res.title, false);
+      } else if (action === "settings") {
+        openSettings();
       } else if (action === "exit") {
         await window.requestExit(dirty, editor.value);
       }
@@ -352,6 +354,64 @@
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
   });
 
+  /* ---- Settings (font + background, for both panes) -------------------- */
+
+  const settingsOverlay = $("settings-overlay");
+  const setFont = $("set-font");
+  const setBg = $("set-bg");
+  let fontChoice = "";
+  let bgColor = "";
+
+  const FONT_FAMILIES = {
+    "": null, // default: keep the built-in serif preview / mono editor
+    serif4: '"Source Serif 4", Georgia, "Times New Roman", serif',
+    plex: '"IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace',
+    sans: 'system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif',
+    sysserif: 'Georgia, "Times New Roman", serif',
+    mono: '"SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace',
+  };
+
+  function applyFont(choice) {
+    const fam = FONT_FAMILIES[choice] || null;
+    const root = document.documentElement.style;
+    // One chosen font drives both panes (and code); default restores the pair.
+    if (fam) { root.setProperty("--serif", fam); root.setProperty("--mono", fam); }
+    else { root.removeProperty("--serif"); root.removeProperty("--mono"); }
+  }
+  function applyBg(hex) {
+    const root = document.documentElement.style;
+    if (hex) root.setProperty("--paper", hex); else root.removeProperty("--paper");
+  }
+  function applySettings() { applyFont(fontChoice); applyBg(bgColor); }
+  function persistSettings() {
+    try { if (window.saveSettings) window.saveSettings(fontChoice, bgColor); } catch (e) {}
+  }
+  function currentPaperHex() {
+    return (getComputedStyle(document.documentElement).getPropertyValue("--paper").trim()) || "#EDEBE4";
+  }
+
+  function openSettings() {
+    if (setFont) setFont.value = (fontChoice in FONT_FAMILIES) ? fontChoice : "";
+    if (setBg) setBg.value = bgColor || currentPaperHex();
+    settingsOverlay.hidden = false;
+  }
+  function closeSettings() { settingsOverlay.hidden = true; }
+
+  if (setFont) setFont.addEventListener("change", () => {
+    fontChoice = setFont.value; applyFont(fontChoice); persistSettings();
+  });
+  if (setBg) setBg.addEventListener("input", () => {
+    bgColor = setBg.value; applyBg(bgColor); persistSettings();
+  });
+  $("set-reset").addEventListener("click", () => {
+    fontChoice = ""; bgColor = ""; applySettings(); persistSettings();
+    if (setFont) setFont.value = "";
+    if (setBg) setBg.value = currentPaperHex();
+  });
+  $("set-close").addEventListener("click", closeSettings);
+  settingsOverlay.addEventListener("mousedown", (ev) => { if (ev.target === settingsOverlay) closeSettings(); });
+  window.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !settingsOverlay.hidden) closeSettings(); });
+
   /* ---- Middle-click autoscroll (like a Windows browser) ---------------- */
 
   (function initAutoscroll() {
@@ -403,8 +463,11 @@
       if (st) {
         if (typeof st.splitRatio === "number") splitRatio = st.splitRatio;
         if (st.view) currentView = st.view;
+        if (typeof st.fontChoice === "string") fontChoice = st.fontChoice;
+        if (typeof st.bgColor === "string") bgColor = st.bgColor;
       }
     } catch (e) { log("loadInitialState failed: " + e); }
+    applySettings();
     setView(currentView, false);
     applyRatio();
     await doRender();

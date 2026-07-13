@@ -21,6 +21,8 @@ type
     maximized*: bool      ## whether the window was maximized at exit
     view*: ViewMode       ## current view mode
     splitRatio*: float    ## divider position in split mode, 0.0 .. 1.0
+    fontChoice*: string   ## settings: font key ("" = the built-in per-pane fonts)
+    bgColor*: string      ## settings: background color hex ("" = theme default)
 
 const
   # Sane minimums so a tiny saved size cannot make the window unusable.
@@ -41,6 +43,8 @@ func defaultState*(): UiState =
     maximized: false,
     view: vmSplit,
     splitRatio: DefaultSplitRatio,
+    fontChoice: "",
+    bgColor: "",
   )
 
 func clampRatio*(r: float): float =
@@ -110,6 +114,8 @@ func toJson*(s: UiState): JsonNode =
     "maximized": s.maximized,
     "view": $s.view,
     "splitRatio": s.splitRatio,
+    "fontChoice": s.fontChoice,
+    "bgColor": s.bgColor,
   }
 
 func parseState*(node: JsonNode): UiState =
@@ -124,6 +130,10 @@ func parseState*(node: JsonNode): UiState =
     result.height = node["height"].getInt()
   if node.hasKey("maximized") and node["maximized"].kind == JBool:
     result.maximized = node["maximized"].getBool()
+  if node.hasKey("fontChoice") and node["fontChoice"].kind == JString:
+    result.fontChoice = node["fontChoice"].getStr()
+  if node.hasKey("bgColor") and node["bgColor"].kind == JString:
+    result.bgColor = node["bgColor"].getStr()
   if node.hasKey("view") and node["view"].kind == JString:
     case node["view"].getStr()
     of "text": result.view = vmText
