@@ -59,6 +59,37 @@ extern "C" void zmMaximizeWindow(void* win) { if (win) gtk_window_maximize(GTK_W
 extern "C" int zmGetWinW(void)   { return zmWinW; }
 extern "C" int zmGetWinH(void)   { return zmWinH; }
 extern "C" int zmGetWinMax(void) { return zmWinMax; }
+
+/* Native file-drop handling. WebKitGTK does not hand file drags to JavaScript
+   (uri-list/plain/files all come back empty), so intercept the drop on the web
+   view widget, where GTK delivers the file URIs, and pass the local path to a
+   Nim callback. */
+typedef void (*zm_drop_cb)(const char*);
+static void zm_on_drop_data(GtkWidget* w, GdkDragContext* ctx, gint x, gint y,
+                            GtkSelectionData* data, guint info, guint t, gpointer cb) {
+  (void)x; (void)y; (void)info;
+  gchar** uris = gtk_selection_data_get_uris(data);
+  gboolean ok = FALSE;
+  if (uris && uris[0]) {
+    gchar* fn = g_filename_from_uri(uris[0], NULL, NULL);
+    if (fn) { ((zm_drop_cb)cb)(fn); g_free(fn); ok = TRUE; }
+  }
+  if (uris) g_strfreev(uris);
+  gtk_drag_finish(ctx, ok, FALSE, t);
+  g_signal_stop_emission_by_name(w, "drag-data-received");
+}
+extern "C" void zmSetupDrop(void* window, void* cb) {
+  if (!window) return;
+  /* The window's child is the WebKitWebView widget (the topmost drop target). */
+  GtkWidget* target_widget = gtk_bin_get_child(GTK_BIN(window));
+  if (!target_widget) target_widget = GTK_WIDGET(window);
+  GtkTargetEntry target;
+  target.target = (gchar*)"text/uri-list";
+  target.flags = 0;
+  target.info = 0;
+  gtk_drag_dest_set(target_widget, GTK_DEST_DEFAULT_ALL, &target, 1, GDK_ACTION_COPY);
+  g_signal_connect(target_widget, "drag-data-received", G_CALLBACK(zm_on_drop_data), cb);
+}
 """.}
 
   proc zmTrackWindow(win: pointer) {.importc, nodecl.}
@@ -66,6 +97,7 @@ extern "C" int zmGetWinMax(void) { return zmWinMax; }
   proc zmGetWinW(): cint {.importc, nodecl.}
   proc zmGetWinH(): cint {.importc, nodecl.}
   proc zmGetWinMax(): cint {.importc, nodecl.}
+  proc zmSetupDrop(widget, cb: pointer) {.importc, nodecl.}
 
 when defined(windows):
   {.emit: """/*TYPESECTION*/
@@ -541,6 +573,18 @@ proc setWindowIcon(w: Webview) =
     except CatchableError:
       discard
 
+when defined(linux):
+  proc onNativeDrop(path: cstring) {.cdecl.} =
+    ## Called from the GTK drop handler with a local filesystem path. Hands it to
+    ## the JS open flow (unsaved guard + read), reusing the existing bridge.
+    try:
+      let p = $path
+      vlog("native drop: " & p)
+      let js = "if(window.__zmDropOpen){window.__zmDropOpen(" & $(%p) & ");}"
+      discard app.w.eval(js.cstring)
+    except CatchableError as e:
+      vlog("native drop failed: " & e.msg)
+
 proc setupWindow(debug: bool): Webview =
   let w = newWebview(debug = debug)
   if w == nil:
@@ -566,6 +610,17 @@ proc setupWindow(debug: bool): Webview =
   bindAll(w)
   setDialogLogger(proc (m: string) {.gcsafe.} = logLine(m))
   w.html = buildPage()
+
+  # WebKitGTK does not expose file drops to JavaScript, so intercept them on the
+  # web view widget at the GTK level and hand the path to the JS open flow.
+  when defined(linux):
+    let dropWin = getWindow(w)
+    if dropWin != nil:
+      zmSetupDrop(dropWin, cast[pointer](onNativeDrop))
+      vlog("native file-drop handler installed")
+    else:
+      vlog("native file-drop: no window handle")
+
   w
 
 # ---- Self-test -------------------------------------------------------------

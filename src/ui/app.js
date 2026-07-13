@@ -379,6 +379,10 @@
     } catch (e) { log("drop content read failed: " + e); }
   }
 
+  // The native GTK drop handler (Linux) calls this with a real filesystem path,
+  // since WebKitGTK does not expose the dropped file to the JS drop event.
+  window.__zmDropOpen = openDroppedPath;
+
   // Always take over drops so the webview cannot navigate to the dropped file or
   // paste its URL. The handler is deliberately NOT async: dataTransfer (getData
   // and items) is only valid synchronously during the event, so read it all here
