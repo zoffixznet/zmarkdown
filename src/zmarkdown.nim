@@ -792,7 +792,7 @@ proc runSelfTest(): int =
 # ---- Main ------------------------------------------------------------------
 
 proc printVersion() =
-  stdout.writeLine("ZMarkdown 0.1.0")
+  stdout.writeLine("ZMarkdown 1.0.0")
 
 proc printHelp() =
   stdout.writeLine("""ZMarkdown - a small markdown editor and viewer
@@ -826,7 +826,7 @@ proc main() =
 
   when defined(debug): verbose = true
 
-  logLine("ZMarkdown 0.1.0 starting")
+  logLine("ZMarkdown 1.0.0 starting")
 
   if wantSelfTest:
     quit(runSelfTest())
