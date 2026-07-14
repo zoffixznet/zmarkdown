@@ -115,20 +115,29 @@ does not use any of this; it uses WebKitGTK.
 
 ## Using it
 
-- Three view buttons in the toolbar switch between **Text**, **Split**, and **Preview**.
-  In Split you can drag the divider all the way to either edge to give one pane the whole
-  window.
-- Formatting shortcuts in the raw editor: **Ctrl+B** bold, **Ctrl+I** italic, **Ctrl+U**
-  underline. With text selected they wrap the selection; with nothing selected they insert
-  the markers and place the caret between them. The link and image toolbar buttons insert
-  sample markdown you can edit in place.
-- Undo and redo with the toolbar buttons or **Ctrl+Z** and **Ctrl+Y** (**Ctrl+Shift+Z**
-  also redoes). The history is bounded by memory, not by a step count: you can undo as far
-  back as fits in about 100 MB, and only when that is exceeded are the oldest edits dropped.
-- File shortcuts: **Ctrl+O** open, **Ctrl+S** save, **Ctrl+Shift+S** save as. The File menu
-  in the toolbar has the same actions plus Exit. Open and Save As use native file dialogs.
-  If you have unsaved changes when opening another file or exiting, a prompt lets you save,
-  discard, or cancel.
+- **View modes.** Three toolbar buttons switch between **Text**, **Split**, and **Preview**.
+  In Split, drag the divider all the way to either edge to give one pane the whole window;
+  clicking any of the three buttons recenters the divider.
+- **Formatting shortcuts** in the raw editor:
+  - **Ctrl+B** bold, **Ctrl+I** italic, **Ctrl+U** underline. With text selected they wrap
+    the selection; with nothing selected they insert the markers and put the caret between
+    them.
+  - The link and image toolbar buttons insert sample markdown you can edit in place.
+- **Undo / redo** with the toolbar buttons or **Ctrl+Z** and **Ctrl+Y** (**Ctrl+Shift+Z**
+  also redoes). History is bounded by memory (about 100 MB), not by a step count: only when
+  that is exceeded are the oldest edits dropped.
+- **Files.** **Ctrl+N** new, **Ctrl+O** open, **Ctrl+S** save, **Ctrl+Shift+S** save as. The
+  File menu has the same actions plus Settings and Exit. If you have unsaved changes when
+  starting a new document, opening a file, or exiting, a prompt lets you save, discard, or
+  cancel.
+- **Drag and drop.** Drop a markdown file onto the window to open it. Setting ZMarkdown as
+  the handler for markdown files also lets you open them by double-clicking in your file
+  manager.
+- **Middle-click autoscroll.** Middle-click in the rendered pane to start drag-to-scroll,
+  like a web browser: a round marker follows the cursor and the pane scrolls by how far you
+  move from the click point. Click again, press a key, or use the wheel to stop.
+- **Settings.** File > Settings sets the font, font color, and background color, applied to
+  both panes; your choices persist between runs.
 
 The editor stays plain markdown text at all times; the shortcuts only insert or wrap
 markdown syntax, they never style the text in the editor itself.
