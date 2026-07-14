@@ -14,6 +14,10 @@ BIN := build/zmarkdown
 SRC := src/zmarkdown.nim
 NIM := nim
 
+# Where `make install` puts things. A user install by default (no root); override
+# with e.g. `make install PREFIX=/usr/local`.
+PREFIX ?= $(HOME)/.local
+
 # Release builds are size-optimized and drop stack traces. Debug builds keep
 # them and raise log verbosity.
 NIMFLAGS_RELEASE := cpp -d:release --hints:off
@@ -97,6 +101,28 @@ smoke: build
 .PHONY: dist
 dist: icons build
 	bash scripts/package-linux.sh
+
+## install: install the binary, desktop entry, and icons into PREFIX (Linux; default ~/.local)
+.PHONY: install
+install: build
+	install -Dm755 $(BIN) "$(PREFIX)/bin/zmarkdown"
+	install -Dm644 packaging/zmarkdown.desktop "$(PREFIX)/share/applications/zmarkdown.desktop"
+	@bash scripts/gen-icons.sh >/dev/null 2>&1 || echo "note: icon generation skipped, using the committed icon"
+	install -Dm644 src/ui/assets/icon.svg "$(PREFIX)/share/icons/hicolor/scalable/apps/zmarkdown.svg"
+	@for s in 16 32 48 64 128 256; do \
+	  if [ -f "src/ui/assets/icon-$$s.png" ]; then \
+	    install -Dm644 "src/ui/assets/icon-$$s.png" "$(PREFIX)/share/icons/hicolor/$${s}x$${s}/apps/zmarkdown.png"; \
+	  fi; \
+	done
+	@echo "Installed ZMarkdown to $(PREFIX). Make sure $(PREFIX)/bin is on your PATH."
+
+## uninstall: remove what 'install' put into PREFIX
+.PHONY: uninstall
+uninstall:
+	rm -f "$(PREFIX)/bin/zmarkdown" "$(PREFIX)/share/applications/zmarkdown.desktop"
+	rm -f "$(PREFIX)/share/icons/hicolor/scalable/apps/zmarkdown.svg"
+	@for s in 16 32 48 64 128 256; do rm -f "$(PREFIX)/share/icons/hicolor/$${s}x$${s}/apps/zmarkdown.png"; done
+	@echo "Removed ZMarkdown from $(PREFIX)."
 
 ## clean: remove build outputs, caches, and generated icons
 .PHONY: clean

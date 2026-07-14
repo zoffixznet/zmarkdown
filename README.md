@@ -45,8 +45,13 @@ make deps    # install the toolchain and libraries (uses sudo for system package
 make run     # build and launch the app
 make test    # run the unit tests and the headless end-to-end smoke test
 make build   # just build the release binary into build/
+make install # install into ~/.local: binary on your PATH, plus menu entry and icons (Linux)
 make dist    # build and package the Linux tarball
 ```
+
+`make install` puts the binary in `~/.local/bin` (make sure that's on your `PATH`) and adds
+the desktop entry and icons so it appears in your application menu. Override the location
+with `make install PREFIX=/usr/local`, and `make uninstall` removes it again.
 
 `make deps` prints exactly what it is about to do before it does it. On Linux it first
 checks which of these system packages are already installed and only uses `sudo apt-get`
