@@ -31,6 +31,7 @@ jobs:
         uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: "2.2.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install nimble dependencies
         run: |
@@ -69,6 +70,7 @@ jobs:
         uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: "2.2.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install nimble dependencies
         run: |
