@@ -8,6 +8,21 @@ be genuinely pleasant to read, not plain browser HTML.
 Written in Nim, it compiles to a single native executable and uses the system webview
 (WebKitGTK on Linux, Edge WebView2 on Windows) for the display.
 
+## Screenshots
+
+Split view: the raw markdown on the left, the live rendered result on the right, with a
+divider you can drag all the way to either edge.
+
+![ZMarkdown in split view](screenshots/split.png)
+
+Preview only: the rendered reading view.
+
+![ZMarkdown preview](screenshots/preview.png)
+
+Text only: a plain markdown editor.
+
+![ZMarkdown editor](screenshots/editor.png)
+
 ## Get a prebuilt binary
 
 You do not need to build anything. Prebuilt binaries are published on the project's GitHub
