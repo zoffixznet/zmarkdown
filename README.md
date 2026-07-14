@@ -47,9 +47,11 @@ Other platforms may work but are not supported.
 ## Runtime requirements (Linux)
 
 The Linux binary links the system GTK3 and WebKitGTK 4.1 libraries, which the desktops
-above already ship. It also needs a native dialog helper for open/save and confirmation
-prompts: KDE provides `kdialog`; on other desktops install `zenity`. `make deps` installs
-`zenity` as a portable fallback. On Windows there is no extra runtime dependency.
+above already ship. It also needs the classic PCRE library (`libpcre3`, providing
+`libpcre.so.3`), which the markdown renderer uses; most desktops have it, but a minimal
+system may not. And it needs a native dialog helper for open/save and confirmation prompts:
+KDE provides `kdialog`; on other desktops install `zenity`. `make deps` installs `libpcre3`
+and `zenity`. On Windows there is no extra runtime dependency.
 
 ## Build from source
 
@@ -79,6 +81,7 @@ for your password. If they are all already present, it does not ask for sudo at 
 | `pkg-config` | finds the GTK and WebKit build and link flags |
 | `libgtk-3-dev` | GTK 3, the toolkit the Linux webview is built on |
 | `libwebkit2gtk-4.1-dev` | WebKitGTK 4.1, renders the markdown preview |
+| `libpcre3` | PCRE library the markdown renderer uses at runtime |
 | `zenity` | native file dialog fallback (KDE already ships kdialog) |
 | `xvfb` | virtual display, used only by `make test` |
 | `ca-certificates`, `curl` | fetch the Nim toolchain over HTTPS |
