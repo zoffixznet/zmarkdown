@@ -5,7 +5,7 @@
 ## transforms, markdown rendering, file IO, dialogs, state) is Nim, reached from
 ## the page through bound procs. The webview is only the display.
 
-import std/[json, os, times, strutils, base64, options, browsers]
+import std/[json, os, times, strutils, base64, options, browsers, uri]
 import std/atomics
 
 import webview
@@ -197,6 +197,7 @@ type
     w: Webview
     currentPath: string    ## path of the open file, "" if none
     ui: UiState            ## restored/persisted UI state
+    startupFile: string    ## file to open on launch (from the command line), "" if none
     exiting: bool
 
 var app: App
@@ -262,6 +263,13 @@ proc jsApplyEdit(id: string; req: JsonNode): string =
 proc jsLoadInitialState(id: string; req: JsonNode): string =
   ## loadInitialState() -> the restored UI state (view and split ratio matter to JS).
   result = $ app.ui.toJson()
+
+proc jsStartupFile(id: string; req: JsonNode): string =
+  ## startupFile() -> {path}. A file passed on the command line (e.g. opened from
+  ## the file manager), or empty. Cleared after the first read so it does not
+  ## reopen on any later query.
+  result = $ %*{"path": app.startupFile}
+  app.startupFile = ""
 
 proc jsPersistState(id: string; req: JsonNode): string =
   ## persistState(view, ratio). Updates the in-memory state; the actual disk
@@ -414,11 +422,11 @@ proc jsOpenPath(id: string; req: JsonNode): string =
     return $ %*{"opened": false}
   let r = readTextFile(path)
   if not r.ok:
-    logLine("open (drop) failed: " & r.error)
+    logLine("open failed (" & path & "): " & r.error)
     errorDialog("Open failed", r.error)
     return $ %*{"opened": false}
   app.currentPath = path
-  logLine("opened (drop) " & path)
+  logLine("opened " & path)
   $ %*{"opened": true, "text": r.value, "title": docName()}
 
 proc jsLoadDropped(id: string; req: JsonNode): string =
@@ -544,6 +552,7 @@ proc bindAll(w: Webview) =
   discard w.bind("render", jsRender)
   discard w.bind("applyEdit", jsApplyEdit)
   discard w.bind("loadInitialState", jsLoadInitialState)
+  discard w.bind("startupFile", jsStartupFile)
   discard w.bind("persistState", jsPersistState)
   discard w.bind("saveSettings", jsSaveSettings)
   discard w.bind("menuOpen", jsMenuOpen)
@@ -788,7 +797,9 @@ proc printVersion() =
 proc printHelp() =
   stdout.writeLine("""ZMarkdown - a small markdown editor and viewer
 
-Usage: zmarkdown [options]
+Usage: zmarkdown [options] [file]
+
+Open a markdown file by passing its path (this is how the file manager opens it).
 
 Options:
   --self-test    Run the headless end-to-end self-test and exit 0/1.
@@ -798,15 +809,20 @@ Options:
 
 proc main() =
   var wantSelfTest = false
+  var fileArg = ""
   for i in 1 .. paramCount():
-    case paramStr(i)
+    let arg = paramStr(i)
+    case arg
     of "--self-test": wantSelfTest = true
     of "--verbose", "-v": verbose = true
     of "--version": printVersion(); return
     of "--help", "-h": printHelp(); return
     else:
-      when defined(debug): verbose = true
-      logLine("ignoring unknown argument: " & paramStr(i))
+      if not arg.startsWith("-") and fileArg.len == 0:
+        fileArg = arg  # a file path (e.g. from the file manager)
+      else:
+        when defined(debug): verbose = true
+        logLine("ignoring unknown argument: " & arg)
 
   when defined(debug): verbose = true
 
@@ -818,6 +834,19 @@ proc main() =
   # Normal launch: fresh empty document, restored UI state (never the old file).
   app.ui = loadState()
   vlog("state loaded: view=" & $app.ui.view & " ratio=" & $app.ui.splitRatio)
+
+  # A file given on the command line (e.g. opened from the file manager) is loaded
+  # on launch. This is separate from the previously open file, which is never
+  # reopened on its own.
+  if fileArg.len > 0:
+    var p = fileArg
+    if p.toLowerAscii().startsWith("file://"):
+      p = p[7 .. ^1]
+      try: p = decodeUrl(p, decodePlus = false)
+      except CatchableError: discard
+    try: app.startupFile = absolutePath(p)
+    except CatchableError: app.startupFile = p
+    vlog("startup file: " & app.startupFile)
   let debug = defined(debug)
   let w = setupWindow(debug = debug)
   discard w.run()

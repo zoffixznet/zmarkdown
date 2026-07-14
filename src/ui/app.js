@@ -630,6 +630,14 @@
     setView(currentView, false);
     applyRatio();
     await doRender();
+    // Open a file passed on the command line (e.g. opened from the file manager).
+    try {
+      const sf = await window.startupFile();
+      if (sf && sf.path) {
+        const res = await window.openPath(false, "", sf.path);
+        if (res && res.opened) { editor.value = res.text; setTitle(res.title, false); await doRender(); }
+      }
+    } catch (e) { log("startup file open failed: " + e); }
     await resetHistory(editor.value);
     editor.focus();
     log("ui ready");
