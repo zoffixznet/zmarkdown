@@ -311,13 +311,7 @@
         }
       } else if (action === "open") {
         const res = await window.menuOpen(dirty, editor.value);
-        if (res && res.opened) {
-          editor.value = res.text;
-          setTitle(res.title, false);
-          await doRender();
-          await resetHistory(editor.value);
-          editor.focus();
-        }
+        if (res && res.opened) await loadIntoEditor(res.text, res.title);
       } else if (action === "save") {
         const res = await window.menuSave(editor.value);
         if (res && res.saved) setTitle(res.title, false);
@@ -357,6 +351,8 @@
 
   async function loadIntoEditor(text, title) {
     editor.value = text;
+    editor.selectionStart = editor.selectionEnd = 0; // caret at the start, not the end
+    editor.scrollTop = 0;                             // show the top of the file
     setTitle(title, false);
     await doRender();
     await resetHistory(editor.value);
@@ -635,7 +631,7 @@
       const sf = await window.startupFile();
       if (sf && sf.path) {
         const res = await window.openPath(false, "", sf.path);
-        if (res && res.opened) { editor.value = res.text; setTitle(res.title, false); await doRender(); }
+        if (res && res.opened) await loadIntoEditor(res.text, res.title);
       }
     } catch (e) { log("startup file open failed: " + e); }
     await resetHistory(editor.value);
