@@ -24,6 +24,10 @@ type
     fontChoice*: string   ## settings: font key ("" = the built-in per-pane fonts)
     bgColor*: string      ## settings: background color hex ("" = theme default)
     textColor*: string    ## settings: text color hex ("" = theme default)
+    renderMode*: string   ## cached graphics probe verdict: "" (not probed yet),
+                          ## "gpu" (3D acceleration works), or "cpu" (render in
+                          ## software; e.g. a VM without 3D). Kept fresh by a
+                          ## background re-probe on every launch.
 
 const
   # Sane minimums so a tiny saved size cannot make the window unusable.
@@ -47,6 +51,7 @@ func defaultState*(): UiState =
     fontChoice: "",
     bgColor: "",
     textColor: "",
+    renderMode: "",
   )
 
 func clampRatio*(r: float): float =
@@ -119,6 +124,7 @@ func toJson*(s: UiState): JsonNode =
     "fontChoice": s.fontChoice,
     "bgColor": s.bgColor,
     "textColor": s.textColor,
+    "renderMode": s.renderMode,
   }
 
 func parseState*(node: JsonNode): UiState =
@@ -139,6 +145,10 @@ func parseState*(node: JsonNode): UiState =
     result.bgColor = node["bgColor"].getStr()
   if node.hasKey("textColor") and node["textColor"].kind == JString:
     result.textColor = node["textColor"].getStr()
+  if node.hasKey("renderMode") and node["renderMode"].kind == JString:
+    # Only the known verdicts; anything else means "probe again".
+    if node["renderMode"].getStr() in ["gpu", "cpu"]:
+      result.renderMode = node["renderMode"].getStr()
   if node.hasKey("view") and node["view"].kind == JString:
     case node["view"].getStr()
     of "text": result.view = vmText

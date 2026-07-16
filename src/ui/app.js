@@ -50,19 +50,35 @@
 
   /* ---- Render (debounced) ---------------------------------------------- */
 
+  // Set when the document changed while the preview pane was hidden; the
+  // skipped render happens when the pane next becomes visible.
+  let previewStale = false;
+
   async function doRender() {
+    // Snapshot the source: edits made while the render round-trip is in
+    // flight must keep their staleness rather than be marked rendered.
+    const source = editor.value;
     try {
-      const html = await window.render(editor.value);
-      reading.innerHTML = html;
-      lastRenderedHtml = html;
+      const html = await window.render(source);
+      // Skip the DOM rebuild when the output is unchanged (e.g. edits inside
+      // a construct that renders the same).
+      if (html !== lastRenderedHtml) {
+        reading.innerHTML = html;
+        lastRenderedHtml = html;
+      }
+      if (editor.value === source) previewStale = false;
     } catch (e) {
       reading.innerHTML =
         '<div class="render-error">Preview failed: ' + escapeHtml(String(e)) + "</div>";
+      lastRenderedHtml = null; // never matches, so the next render repaints
     }
   }
 
   function scheduleRender() {
     if (renderTimer) clearTimeout(renderTimer);
+    // Nobody is looking at the preview in Text view: skip the whole render
+    // pipeline (markdown -> bridge -> DOM) and catch up on the view switch.
+    if (currentView === "text") { previewStale = true; return; }
     renderTimer = setTimeout(doRender, 120);
   }
 
@@ -197,6 +213,8 @@
     // In Text/Preview the per-view CSS controls the panes, so clear the inline
     // flex that split mode set (otherwise a collapsed editor stays collapsed).
     else { editorPane.style.flex = ""; previewPane.style.flex = ""; }
+    // Catch up on renders skipped while the preview was hidden.
+    if (view !== "text" && previewStale) doRender();
     if (persist !== false) persist_state();
   }
 
@@ -451,7 +469,15 @@
   for (const b of document.querySelectorAll(".viewmodes button")) {
     // Recenter the divider on any mode click, so a divider dragged to an edge is
     // always recoverable just by clicking a view button.
-    b.addEventListener("click", () => { splitRatio = 0.5; setView(b.getAttribute("data-view")); });
+    b.addEventListener("click", async () => {
+      splitRatio = 0.5;
+      const v = b.getAttribute("data-view");
+      // Catch up on renders skipped in Text view BEFORE revealing the pane,
+      // so it never flashes outdated content. setView's own catch-up stays
+      // as the safety net for other callers.
+      if (v !== "text" && previewStale) await doRender();
+      setView(v);
+    });
   }
 
   /* ---- Editor events --------------------------------------------------- */
@@ -623,8 +649,11 @@
       }
     } catch (e) { log("loadInitialState failed: " + e); }
     applySettings();
+    // setView applies the divider ratio when the view is split; calling
+    // applyRatio here unconditionally would re-set the inline flex that
+    // setView just cleared, capping the editor at the split width even in
+    // Text view until a view button is clicked.
     setView(currentView, false);
-    applyRatio();
     await doRender();
     // Open a file passed on the command line (e.g. opened from the file manager).
     try {

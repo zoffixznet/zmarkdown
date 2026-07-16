@@ -152,20 +152,28 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   move from the click point. Click again, press a key, or use the wheel to stop.
 - **Settings.** File > Settings sets the font, font color, and background color, applied to
   both panes; your choices persist between runs.
+- **Virtual machines and machines without 3D acceleration** (Linux). At startup the app
+  checks whether the display has working 3D acceleration. Where it does not — a VM without
+  guest 3D is the common case — the preview engine is told to render on the CPU instead of
+  stalling for seconds on the missing GPU. The verdict is cached and quietly re-checked in
+  the background each launch, so enabling 3D in your VM later is picked up on the next run.
+  To override the detection, pass `--no-gpu` or `--gpu` on the command line, or set
+  `ZMARKDOWN_NO_GPU=1` in the environment.
 
 The editor stays plain markdown text at all times; the shortcuts only insert or wrap
 markdown syntax, they never style the text in the editor itself.
 
 ## Configuration
 
-There is no settings screen. The app remembers a little state between runs, stored as JSON:
+The app remembers a little state between runs, stored as JSON:
 
 - Linux: `~/.config/zmarkdown/state.json` (or `$XDG_CONFIG_HOME/zmarkdown/state.json`)
 - Windows: `%APPDATA%\ZMarkdown\state.json`
 
 It restores the window size and whether the window was maximized (the size is clamped to
-your current screen and never below a usable minimum), the view mode, and the divider
-position. It does not reopen your previous file: every launch starts with a fresh, empty
+your current screen and never below a usable minimum), the view mode, the divider
+position, your File > Settings choices, and the cached graphics verdict described under
+"Using it". It does not reopen your previous file: every launch starts with a fresh, empty
 document. The app follows your system light or dark
 preference automatically. If the state file is missing or unreadable, the app starts with
 sensible defaults; if the config directory cannot be written, it simply skips saving state.

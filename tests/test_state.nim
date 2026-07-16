@@ -24,6 +24,14 @@ suite "json round trip":
       let s = UiState(width: 800, height: 600, view: v, splitRatio: 0.5)
       check parseState(s.toJson()).view == v
 
+  test "render mode verdicts round trip, junk resets to unknown":
+    for m in ["", "gpu", "cpu"]:
+      var s = defaultState()
+      s.renderMode = m
+      check parseState(s.toJson()).renderMode == m
+    check parseState(parseJson("""{"renderMode": "quantum"}""")).renderMode == ""
+    check parseState(parseJson("""{"renderMode": 7}""")).renderMode == ""
+
 suite "corrupt or missing input falls back to defaults":
   test "invalid json string yields none":
     check loadStateFromString("this is not json {{{").isNone
