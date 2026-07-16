@@ -15,14 +15,15 @@ declare -A PKG_DESC=(
   [pkg-config]="finds the GTK and WebKit build and link flags"
   [libgtk-3-dev]="GTK 3, the toolkit the Linux webview is built on"
   [libwebkit2gtk-4.1-dev]="WebKitGTK 4.1, renders the markdown preview"
-  [libpcre3]="PCRE library, used by the markdown renderer's regexes at runtime"
   [zenity]="native file dialog fallback (KDE already ships kdialog)"
   [xvfb]="virtual display, used only by 'make test'"
   [ca-certificates]="trusted CA roots for the HTTPS downloads below"
   [curl]="fetches the Nim toolchain over HTTPS"
 )
-# Fixed order so the output is stable run to run.
-SYSTEM_PKGS=(build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libpcre3 zenity xvfb ca-certificates curl)
+# Fixed order so the output is stable run to run. The regex library the
+# markdown renderer uses (PCRE) is vendored and statically linked by the build,
+# so it is deliberately not in this list; modern distros no longer package it.
+SYSTEM_PKGS=(build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev zenity xvfb ca-certificates curl)
 
 # Only elevate for what is actually missing. dpkg-query tells us what is already
 # installed, so an already-set-up system never gets a sudo prompt at all.

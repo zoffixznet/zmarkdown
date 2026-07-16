@@ -18,6 +18,20 @@ switch("nimcache", "nimcache/" & projectName())
 # patched copy rather than any nimble-installed one.
 switch("path", "src/vendor/webview")
 
+# The markdown renderer uses Nim's std/re, a wrapper around the legacy PCRE1
+# library. PCRE1 is end-of-life and modern distros no longer package it, so the
+# vendored PCRE 8.45 source (src/vendor/pcre) is built into a static library by
+# scripts/build-pcre.sh (make runs it automatically). When it is present, link
+# it in; the binary then needs no PCRE at runtime, on Linux or Windows.
+let staticPcre = thisDir() & "/build/pcre/libpcre.a"
+if fileExists(staticPcre):
+  switch("dynlibOverride", "pcre")
+  switch("passL", staticPcre)
+else:
+  echo "warning: build/pcre/libpcre.a not found; the binary will try to load"
+  echo "         the system PCRE at runtime, which modern distros no longer"
+  echo "         ship. Run 'bash scripts/build-pcre.sh' to link it statically."
+
 # Tell the vendored binding to take the Linux/GTK path explicitly. On Windows the
 # binding auto-selects the Edge WebView2 backend.
 when defined(linux):

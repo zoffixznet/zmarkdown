@@ -57,16 +57,24 @@ icons:
 src/ui/assets/icon-128.png:
 	bash scripts/gen-icons.sh
 
+# The markdown renderer's regex engine wraps the legacy PCRE1 library, which
+# modern distros no longer package. The pinned upstream source is vendored in
+# the repo; build it once into a static library that config.nims links into
+# every binary, so nothing needs PCRE at runtime.
+PCRE_LIB := build/pcre/libpcre.a
+$(PCRE_LIB): src/vendor/pcre/pcre-8.45.tar.gz scripts/build-pcre.sh
+	bash scripts/build-pcre.sh
+
 ## build: build the release binary into build/
 .PHONY: build
-build: src/ui/assets/icon-128.png
+build: src/ui/assets/icon-128.png $(PCRE_LIB)
 	@mkdir -p build
 	$(NIM) $(NIMFLAGS_RELEASE) --app:gui -o:$(BIN) $(SRC)
 	@echo "Built $(BIN)"
 
 ## debug: build a debug binary with verbose logging and stack traces
 .PHONY: debug
-debug: src/ui/assets/icon-128.png
+debug: src/ui/assets/icon-128.png $(PCRE_LIB)
 	@mkdir -p build
 	$(NIM) $(NIMFLAGS_DEBUG) -o:$(BIN) $(SRC)
 	@echo "Built $(BIN) (debug)"
@@ -85,7 +93,7 @@ test: unit smoke
 
 ## unit: run the Nim unit test suite
 .PHONY: unit
-unit:
+unit: $(PCRE_LIB)
 	$(NIM) c -r --hints:off tests/test_editing.nim
 	$(NIM) c -r --hints:off tests/test_state.nim
 	$(NIM) c -r --hints:off tests/test_files.nim

@@ -47,11 +47,10 @@ Other platforms may work but are not supported.
 ## Runtime requirements (Linux)
 
 The Linux binary links the system GTK3 and WebKitGTK 4.1 libraries, which the desktops
-above already ship. It also needs the classic PCRE library (`libpcre3`, providing
-`libpcre.so.3`), which the markdown renderer uses; most desktops have it, but a minimal
-system may not. And it needs a native dialog helper for open/save and confirmation prompts:
-KDE provides `kdialog`; on other desktops install `zenity`. `make deps` installs `libpcre3`
-and `zenity`. On Windows there is no extra runtime dependency.
+above already ship. It also needs a native dialog helper for open/save and confirmation
+prompts: KDE provides `kdialog`; on other desktops install `zenity` (`make deps` installs
+it). The regex library the markdown renderer uses (PCRE) is compiled into the binary, so
+nothing else is needed at runtime. On Windows there is no extra runtime dependency.
 
 ## Build from source
 
@@ -81,7 +80,6 @@ for your password. If they are all already present, it does not ask for sudo at 
 | `pkg-config` | finds the GTK and WebKit build and link flags |
 | `libgtk-3-dev` | GTK 3, the toolkit the Linux webview is built on |
 | `libwebkit2gtk-4.1-dev` | WebKitGTK 4.1, renders the markdown preview |
-| `libpcre3` | PCRE library the markdown renderer uses at runtime |
 | `zenity` | native file dialog fallback (KDE already ships kdialog) |
 | `xvfb` | virtual display, used only by `make test` |
 | `ca-certificates`, `curl` | fetch the Nim toolchain over HTTPS |
@@ -95,10 +93,12 @@ the Edge WebView2 runtime is already present on Windows 11):
 powershell -ExecutionPolicy Bypass -File scripts\deps-windows.ps1
 ```
 
-then build with:
+then build from Git Bash (the MinGW compiler Nim uses must be on `PATH`; the first
+command compiles the bundled regex library — see "Bundled PCRE" below):
 
 ```
-nim cpp -d:release --hints:off -o:build\zmarkdown.exe src\zmarkdown.nim
+bash scripts/build-pcre.sh
+nim cpp -d:release --hints:off -o:build/zmarkdown.exe src/zmarkdown.nim
 ```
 
 ### The Microsoft WebView2 SDK is fetched, not bundled
@@ -115,6 +115,17 @@ The Windows dependency bootstrap (`scripts\deps-windows.ps1`) and the CI build b
 `src/vendor/webview/libs/webview2/` (a git-ignored folder). Set `WEBVIEW2_SDK_VERSION` to
 pin a specific SDK version; otherwise the latest stable release is used. The Linux build
 does not use any of this; it uses WebKitGTK.
+
+### Bundled PCRE (compiled in, no runtime dependency)
+
+The markdown renderer's regex engine uses the classic PCRE library. That library's final
+release (8.45) is end-of-life upstream, and current Linux distributions have removed its
+package from their archives, so it cannot be relied on — or even installed — at runtime.
+Instead, its source tarball (BSD licensed; notice reproduced under "License" below) is
+vendored at `src/vendor/pcre/pcre-8.45.tar.gz`, verified against its SHA-256, and compiled
+into a static library by `scripts/build-pcre.sh` (`make build` runs it automatically). The
+result is linked directly into the executable on both Linux and Windows, so the finished
+binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
 
 ## Using it
 
@@ -255,6 +266,61 @@ Copyright (c) 2017 IBM Corp. with Reserved Font Name "Plex".
 The complete OFL-1.1 text for each ships alongside the fonts in
 `src/ui/assets/fonts/LICENSE-SourceSerif4.txt` and
 `src/ui/assets/fonts/LICENSE-IBMPlexMono.txt`.
+
+### PCRE (vendored under `src/vendor/pcre/`, compiled into the binaries)
+
+The regex library the markdown renderer uses. The pristine upstream source tarball is
+vendored and statically linked (see "Bundled PCRE" above). Only the basic C library is
+built — no JIT and no C++ wrapper. Its notice, from the `LICENCE` file in the tarball:
+
+```
+PCRE LICENCE
+------------
+
+Release 8 of PCRE is distributed under the terms of the "BSD" licence, as
+specified below.
+
+THE BASIC LIBRARY FUNCTIONS
+---------------------------
+
+Written by:       Philip Hazel
+
+University of Cambridge Computing Service,
+Cambridge, England.
+
+Copyright (c) 1997-2021 University of Cambridge
+All rights reserved.
+
+THE "BSD" LICENCE
+-----------------
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+    * Neither the name of the University of Cambridge nor the name of Google
+      Inc. nor the names of their contributors may be used to endorse or
+      promote products derived from this software without specific prior
+      written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
 
 ### Microsoft WebView2 SDK (Windows build only, not bundled)
 

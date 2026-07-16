@@ -49,4 +49,7 @@ nimble install -y "tinyfiledialogs@3.21.3"
 # fetch its headers from NuGet so the Windows build can compile.
 & (Join-Path $PSScriptRoot "fetch-webview2.ps1")
 
-Write-Host "==> Done. Build with: nim cpp -d:release --app:gui -o:build\zmarkdown.exe src\zmarkdown.nim"
+Write-Host "==> Done. Build (from Git Bash, so the vendored PCRE static library"
+Write-Host "    is compiled first; MinGW gcc must be on PATH):"
+Write-Host "      bash scripts/build-pcre.sh"
+Write-Host "      nim cpp -d:release --app:gui -o:build/zmarkdown.exe src/zmarkdown.nim"

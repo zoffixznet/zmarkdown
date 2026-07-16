@@ -1,6 +1,6 @@
 # Package
 
-version       = "1.0.0"
+version       = "1.0.1"
 author        = "Zoffix Znet"
 description    = "A small, fast desktop markdown editor and viewer"
 license        = "MIT"
@@ -10,8 +10,9 @@ binDir        = "build"
 
 # Dependencies
 #
-# The webview binding is vendored under src/vendor/webview (see docs/DECISIONS.md),
-# so it is not listed here. These are the registry packages, pinned.
+# The webview binding is vendored under src/vendor/webview and PCRE is vendored
+# under src/vendor/pcre, so neither is listed here. These are the registry
+# packages, pinned.
 
 requires "nim >= 2.0.0"
 requires "markdown == 0.8.8"

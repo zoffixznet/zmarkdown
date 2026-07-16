@@ -28,11 +28,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install system dependencies
+        # No PCRE package here: the vendored PCRE source is built and linked
+        # statically by the build (modern distros no longer package PCRE1).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libpcre3 \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
             zenity xvfb imagemagick librsvg2-bin
 
       - name: Install Nim
@@ -53,6 +55,13 @@ jobs:
         run: |
           make unit
           xvfb-run -a ./build/zmarkdown --self-test
+          # PCRE must be linked in statically: the binary must not carry the
+          # dlopen reference to the system libpcre, which modern distros no
+          # longer ship.
+          if grep -q "libpcre\.so" build/zmarkdown; then
+            echo "error: binary still references the dynamic libpcre" >&2
+            exit 1
+          fi
 
       - name: Package tarball
         run: make dist
@@ -84,6 +93,12 @@ jobs:
         # Microsoft's WebView2 SDK is under Microsoft's own license and is kept
         # out of this repository; download its headers from NuGet at build time.
         run: ./scripts/fetch-webview2.ps1
+
+      - name: Build the vendored PCRE (static)
+        shell: bash
+        # Statically linked so the exe does not look for pcre64.dll at runtime,
+        # which stock Windows does not have.
+        run: bash scripts/build-pcre.sh
 
       - name: Compile Windows resource (icon + version info)
         shell: bash
