@@ -11,7 +11,7 @@ import std/osproc
 import std/streams
 import std/strtabs
 
-const AppVersion = "1.0.2"
+const AppVersion = "1.1.0"
 
 import webview
 
@@ -21,6 +21,7 @@ import core/state
 import core/files
 import core/dialogs
 import core/history as histmod
+import core/search as srch
 
 # Direct native calls for window geometry and the maximized state. On Linux we
 # track size and maximized live through GTK signals, so the values are captured
@@ -565,6 +566,89 @@ proc jsApplyEdit(id: string; req: JsonNode): string =
     result = $ %*{"text": (if req.len > 1: req[1].getStr() else: ""),
                   "selStart": 0, "selEnd": 0}
 
+# ---- Find and replace ------------------------------------------------------
+#
+# The matching itself lives in core/search, which speaks UTF-16 code unit
+# offsets so the results can be handed straight to the textarea's selection.
+
+proc searchOpts(req: JsonNode; caseIdx, wordIdx: int): SearchOpts =
+  ## Read the two option toggles out of a bridge call, defaulting to off.
+  proc flag(i: int): bool =
+    req.len > i and req[i].kind == JBool and req[i].getBool()
+  SearchOpts(matchCase: flag(caseIdx), wholeWord: flag(wordIdx))
+
+proc jsSearchFind(id: string; req: JsonNode): string =
+  ## searchFind(text, needle, matchCase, wholeWord)
+  ##   -> {offsets, total, capped}
+  ##
+  ## `offsets` is a flat array of start/stop pairs (s0, e0, s1, e1, ...) rather
+  ## than an array of objects: this crosses the bridge on every keystroke and
+  ## the flat form is a fraction of the JSON.
+  # Indexing a short argument list would raise IndexDefect, which `except
+  # CatchableError` does not catch, so arity is checked first (as every other
+  # bound proc here does).
+  if req.len < 2:
+    return $ %*{"offsets": newJArray(), "total": 0, "capped": false}
+  try:
+    let
+      text = req[0].getStr()
+      needle = req[1].getStr()
+      r = srch.find(text, needle, searchOpts(req, 2, 3))
+    var offsets = newJArray()
+    for m in r.matches:
+      offsets.add(%m.start)
+      offsets.add(%m.stop)
+    result = $ %*{"offsets": offsets, "total": r.total, "capped": r.capped}
+  except CatchableError as e:
+    vlog("searchFind failed: " & e.msg)
+    result = $ %*{"offsets": newJArray(), "total": 0, "capped": false}
+
+proc replaceResultJson(r: ReplaceResult): JsonNode =
+  %*{"text": r.text, "selStart": r.selStart, "selEnd": r.selEnd,
+     "replaced": r.replaced}
+
+proc jsSearchReplace(id: string; req: JsonNode): string =
+  ## searchReplace(text, needle, replacement, matchCase, wholeWord,
+  ##               selStart, selEnd) -> {text, selStart, selEnd, replaced}
+  ##
+  ## Replaces only when the selection sits exactly on a match, so pressing
+  ## Replace without having landed on one is a no-op rather than a surprise.
+  if req.len < 7:
+    return $ %*{"text": (if req.len > 0: req[0].getStr() else: ""),
+                "selStart": 0, "selEnd": 0, "replaced": 0}
+  try:
+    let
+      text = req[0].getStr()
+      needle = req[1].getStr()
+      repl = req[2].getStr()
+      a = req[5].getInt()
+      b = req[6].getInt()
+    result = $ replaceResultJson(
+      replaceOne(text, needle, repl, searchOpts(req, 3, 4), a, b))
+  except CatchableError as e:
+    vlog("searchReplace failed: " & e.msg)
+    # Hand the input back untouched so the editor is never corrupted.
+    result = $ %*{"text": (if req.len > 0: req[0].getStr() else: ""),
+                  "selStart": 0, "selEnd": 0, "replaced": 0}
+
+proc jsSearchReplaceAll(id: string; req: JsonNode): string =
+  ## searchReplaceAll(text, needle, replacement, matchCase, wholeWord)
+  ##   -> {text, selStart, selEnd, replaced}. One edit, so one undo step.
+  if req.len < 3:
+    return $ %*{"text": (if req.len > 0: req[0].getStr() else: ""),
+                "selStart": 0, "selEnd": 0, "replaced": 0}
+  try:
+    let
+      text = req[0].getStr()
+      needle = req[1].getStr()
+      repl = req[2].getStr()
+    result = $ replaceResultJson(
+      replaceAll(text, needle, repl, searchOpts(req, 3, 4)))
+  except CatchableError as e:
+    vlog("searchReplaceAll failed: " & e.msg)
+    result = $ %*{"text": (if req.len > 0: req[0].getStr() else: ""),
+                  "selStart": 0, "selEnd": 0, "replaced": 0}
+
 proc jsLoadInitialState(id: string; req: JsonNode): string =
   ## loadInitialState() -> the restored UI state (view and split ratio matter to JS).
   result = $ app.ui.toJson()
@@ -874,6 +958,9 @@ proc computeRestoreSize(): tuple[w, h: int] =
 proc bindAll(w: Webview) =
   discard w.bind("render", jsRender)
   discard w.bind("applyEdit", jsApplyEdit)
+  discard w.bind("searchFind", jsSearchFind)
+  discard w.bind("searchReplace", jsSearchReplace)
+  discard w.bind("searchReplaceAll", jsSearchReplaceAll)
   discard w.bind("loadInitialState", jsLoadInitialState)
   discard w.bind("startupFile", jsStartupFile)
   discard w.bind("persistState", jsPersistState)
@@ -1038,6 +1125,42 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
       # Renders are skipped while the preview is hidden and caught up on switch.
       if not r{"staleOk"}.getBool():
         failures.add("hidden-preview render skip/catch-up failed")
+      # Find and replace, driven through the real bar.
+      let f = r{"find"}
+      if f == nil or f.kind != JObject:
+        failures.add("find self-test did not report")
+      else:
+        proc want(key, expect: string) =
+          let got = f{key}.getStr()
+          if got != expect:
+            failures.add("find " & key & ": expected '" & expect & "', got '" & got & "'")
+        proc wantInt(key: string, expect: int) =
+          let got = f{key}.getInt()
+          if got != expect:
+            failures.add("find " & key & ": expected " & $expect & ", got " & $got)
+        if f{"error"}.getStr().len > 0:
+          failures.add("find driver error: " & f{"error"}.getStr())
+        # Document: "a **cat** and a Cat and cats here"
+        want("count", "1 / 3")        # three matches, sitting on the first
+        want("next", "2 / 3")         # Enter advances
+        want("wrap", "1 / 3")         # and wraps past the last one
+        want("selected", "cat")       # the match is selected in the editor
+        wantInt("editorMarks", 3)     # all three painted in the highlight layer
+        wantInt("caseTotal", 1)       # Match case: only the capitalized "Cat"
+        wantInt("wordTotal", 2)       # Whole word: not the "cat" inside "cats"
+        if not f{"caretKept"}.getBool():
+          failures.add("typing with the find bar open moved the caret onto a match")
+        want("replaced", "a **dog** and a Cat and cats here")
+        want("replacedAll", "a **dog** and a dog and dogs here")
+        # Replace All is one undo step: undoing lands on the pre-Replace-All text.
+        want("undone", "a **dog** and a Cat and cats here")
+        want("previewCount", "1 / 3") # Preview view searches the rendered text
+        wantInt("previewMarks", 3)
+        # The emphasis is stripped in the rendered text, so marking "cat" there
+        # only works if the rendered offsets (not the source's) were used.
+        want("previewMarkText", "cat")
+        if not f{"closed"}.getBool():
+          failures.add("closing the find bar left highlights behind")
     except CatchableError as e:
       failures.add("report parse error: " & e.msg)
     app.exiting = true
@@ -1108,10 +1231,62 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           var caughtUp = window.__zm.getPreviewHtml().indexOf("StaleCheck") !== -1;
           staleOk = skipped && caughtUp;
         } catch (e) { staleOk = false; }
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk });
+        // Find and replace, driven through the real bar rather than the procs
+        // behind it, so the wiring is covered too.
+        var fr = {};
+        try {
+          var edEl2 = document.getElementById("editor");
+          // The emphasis matters: it makes the rendered text shorter than the
+          // source, so preview offsets differ from editor offsets and a
+          // preview search that wrongly used the source would mark the wrong
+          // characters rather than merely the right count of them.
+          var fsample = "a **cat** and a Cat and cats here";
+          async function seed() {
+            await window.__zm.setEditor(fsample);
+            edEl2.setSelectionRange(0, 0); // start from the top, deterministically
+          }
+          await seed();
+          window.__zm.setView("split");
+          await window.__zm.findOpen(false);
+          var st = await window.__zm.findQuery("cat", false, false);
+          fr.count = st.count;
+          fr.selected = st.selected;
+          fr.editorMarks = st.editorMarks;
+          fr.next = window.__zm.findNext().count;
+          window.__zm.findNext();
+          fr.wrap = window.__zm.findNext().count;   // past the last one, back to 1
+          fr.caseTotal = (await window.__zm.findQuery("Cat", true, false)).total;
+          fr.wordTotal = (await window.__zm.findQuery("cat", false, true)).total;
+          // Regression guard: typing with the bar open must leave the caret
+          // alone. It used to be dragged onto the current match (and the match
+          // left selected), so the next keystroke overwrote it.
+          await window.__zm.findQuery("cat", false, false);
+          edEl2.value = fsample + "X";
+          edEl2.setSelectionRange(edEl2.value.length, edEl2.value.length);
+          edEl2.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(function (r) { setTimeout(r, 400); }); // past the 90ms debounce
+          fr.caretKept = edEl2.selectionStart === edEl2.value.length &&
+                         edEl2.selectionEnd === edEl2.value.length;
+          await seed();
+          await window.__zm.findQuery("cat", false, false);
+          fr.replaced = (await window.__zm.findReplaceOne("dog")).text;
+          fr.replacedAll = (await window.__zm.findReplaceAll("dog")).text;
+          var un = await window.historyUndo();
+          fr.undone = (un && un.ok) ? un.text : "";
+          await seed();
+          window.__zm.setView("preview");
+          st = await window.__zm.findQuery("cat", false, false);
+          fr.previewCount = st.count;
+          fr.previewMarks = st.previewMarks;
+          fr.previewMarkText = st.previewMarkText;
+          var closed = window.__zm.findClose();
+          fr.closed = closed.editorMarks === 0 && closed.previewMarks === 0;
+          window.__zm.setView("split");
+        } catch (e) { fr.error = String(e); }
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' } });
       }
     });
   })();

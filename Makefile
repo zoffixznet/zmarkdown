@@ -99,6 +99,7 @@ unit: $(PCRE_LIB)
 	$(NIM) c -r --hints:off tests/test_files.nim
 	$(NIM) c -r --hints:off tests/test_markdown.nim
 	$(NIM) c -r --hints:off tests/test_history.nim
+	$(NIM) c -r --hints:off tests/test_search.nim
 
 ## smoke: build then run the headless end-to-end self-test under a virtual display
 .PHONY: smoke
@@ -140,5 +141,6 @@ clean:
 	rm -f src/ui/assets/icon-16.png src/ui/assets/icon-32.png \
 	      src/ui/assets/icon-48.png src/ui/assets/icon-64.png \
 	      src/ui/assets/icon-256.png src/ui/assets/icon.ico
-	rm -f tests/test_editing tests/test_state tests/test_files tests/test_markdown tests/test_history
+	rm -f tests/test_editing tests/test_state tests/test_files tests/test_markdown \
+	      tests/test_history tests/test_search
 	@echo "Cleaned"

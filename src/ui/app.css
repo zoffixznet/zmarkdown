@@ -27,6 +27,11 @@
   --shadow: rgba(20, 23, 30, 0.08);
   --sel: rgba(16, 114, 107, 0.18);
 
+  /* Search highlighting: warm amber for every match, the accent teal for the
+   * one you are on. Both are translucent so the text keeps its own color. */
+  --find-hit: rgba(196, 132, 18, 0.30);
+  --find-current: rgba(16, 114, 107, 0.42);
+
   --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
   --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -51,6 +56,8 @@
     --chrome-ink: #B7BCC4;
     --shadow: rgba(0, 0, 0, 0.35);
     --sel: rgba(63, 184, 173, 0.24);
+    --find-hit: rgba(226, 172, 58, 0.28);
+    --find-current: rgba(63, 184, 173, 0.42);
   }
 }
 
@@ -204,6 +211,94 @@ button.icon svg { width: 16px; height: 16px; display: block; }
 }
 .doc-title .dirty { color: var(--accent); font-weight: 600; }
 
+/* ---- Find / replace bar ------------------------------------------------- */
+
+/* Docked between the toolbar and the panes: it never covers the text being
+ * searched, and the panes simply get shorter while it is open. */
+#findbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--rule);
+  color: var(--chrome-ink);
+  flex: 0 0 auto;
+}
+#findbar[hidden] { display: none; }
+
+.find-rows {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.find-row { display: flex; align-items: center; gap: 0.25rem; min-width: 0; }
+.find-row[hidden] { display: none; }
+
+#find-expand svg { transition: transform 0.12s ease; }
+#find-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+.find-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 24rem;
+  min-width: 7rem;
+}
+.find-field input {
+  width: 100%;
+  height: 1.95rem;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.3rem 4.6rem 0.3rem 0.5rem;
+  outline: none;
+}
+.find-field input:focus { border-color: var(--accent); }
+.find-field input::placeholder { color: var(--ink-soft); opacity: 0.8; }
+#find-replace-row .find-field input { padding-right: 0.5rem; }
+
+.find-count {
+  position: absolute;
+  right: 0.55rem;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* A query with no matches: the field says so rather than looking merely empty. */
+.find-field.none input { border-color: #b3261e; }
+.find-field.none .find-count { color: #b3261e; }
+
+/* The option toggles reuse the segmented-control look of the view modes. */
+button.toggle[aria-pressed="true"] { background: var(--accent); color: #fff; }
+button.toggle[aria-pressed="true"]:hover { background: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) {
+  button.toggle[aria-pressed="true"] { color: #0b0d10; }
+  button.toggle[aria-pressed="true"]:hover { color: #0b0d10; }
+}
+button.toggle { font-size: 0.8rem; font-weight: 600; }
+/* "ab" underlined: the conventional whole-word mark. */
+.ww { border-bottom: 1.5px solid currentColor; line-height: 1; }
+
+#findbar button.wide { min-width: 5.5rem; padding: 0.3rem 0.7rem; }
+#findbar button:disabled { opacity: 0.35; }
+
+.find-note {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  margin-left: 0.35rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---- Panes -------------------------------------------------------------- */
 
 #panes {
@@ -215,7 +310,7 @@ button.icon svg { width: 16px; height: 16px; display: block; }
 
 .pane { min-height: 0; overflow: hidden; height: 100%; }
 
-#editor-pane { display: flex; }
+#editor-pane { display: flex; background: var(--paper); }
 #preview-pane { display: flex; }
 
 /* Split mode uses inline flex-basis set from JS via the divider ratio. In Text
@@ -230,26 +325,72 @@ button.icon svg { width: 16px; height: 16px; display: block; }
 
 /* ---- Editor ------------------------------------------------------------- */
 
+/* The editor is two stacked layers: a highlight layer that mirrors the text
+ * purely to paint search matches, and the real textarea on top of it, with a
+ * transparent background so the marks below show through. Everything that
+ * affects where a character lands must be identical on both, or the marks
+ * drift away from the words they belong to. */
+#editor-stack {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+}
+
+#editor, #editor-highlights .hl-inner {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  line-height: 1.65;
+  padding: 1.6rem clamp(1rem, 4vw, 2.4rem);
+  margin: 0;
+  border: none;
+  tab-size: 4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  letter-spacing: normal;
+}
+
 #editor {
   flex: 1 1 auto;
   width: 100%;
   height: 100%;
   resize: none;
-  border: none;
   outline: none;
-  background: var(--paper);
+  background: transparent;
   color: var(--content-ink, var(--ink));
-  font-family: var(--mono);
-  font-size: 0.95rem;
-  line-height: 1.65;
-  padding: 1.6rem clamp(1rem, 4vw, 2.4rem);
-  tab-size: 4;
-  white-space: pre-wrap;
-  word-wrap: break-word;
   caret-color: var(--accent);
+  position: relative;
+  z-index: 1;
 }
 #editor::placeholder { color: var(--ink-soft); opacity: 0.7; }
 #editor:focus-visible { outline: none; }
+
+/* The mirror. Clipped to the pane and shifted by the editor's scroll offset,
+ * rather than scrolled itself, so it cannot end up with a scrollbar of its own
+ * (which would change the wrap width and misalign every mark). */
+#editor-highlights {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 0;
+}
+#editor-highlights .hl-inner {
+  /* Width is set from the textarea's clientWidth in JS so both wrap at exactly
+   * the same column, scrollbar included. */
+  color: transparent;
+  will-change: transform;
+}
+#editor-highlights mark {
+  background: var(--find-hit);
+  color: transparent;
+  border-radius: 2px;
+}
+#editor-highlights mark.current { background: var(--find-current); }
 
 /* ---- Divider seam ------------------------------------------------------- */
 
@@ -510,6 +651,15 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
   letter-spacing: 0.3em;
 }
 
+/* Search matches in the rendered pane (Preview view searches what you read). */
+.reading mark.zm-hit {
+  background: var(--find-hit);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.reading mark.zm-hit.current { background: var(--find-current); }
+
 .render-error {
   font-family: var(--sans);
   color: #b3261e;
@@ -537,4 +687,6 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
   .wordmark { display: none; }
   #toolbar { flex-wrap: wrap; }
   .reading { padding: 1.4rem 1rem 3rem; }
+  .find-row { flex-wrap: wrap; }
+  .find-note { display: none; }
 }

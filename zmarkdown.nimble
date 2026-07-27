@@ -1,6 +1,6 @@
 # Package
 
-version       = "1.0.2"
+version       = "1.1.0"
 author        = "Zoffix Znet"
 description    = "A small, fast desktop markdown editor and viewer"
 license        = "MIT"
@@ -24,4 +24,6 @@ task test, "Run the unit test suite":
   exec "nim c -r --hints:off tests/test_editing.nim"
   exec "nim c -r --hints:off tests/test_state.nim"
   exec "nim c -r --hints:off tests/test_files.nim"
+  exec "nim c -r --hints:off tests/test_history.nim"
+  exec "nim c -r --hints:off tests/test_search.nim"
   exec "nim cpp -r --hints:off tests/test_markdown.nim"

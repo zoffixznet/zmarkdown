@@ -12,6 +12,7 @@ tests/test_state
 tests/test_markdown
 tests/test_files
 tests/test_history
+tests/test_search
 /src/ui/assets/icon-*.png
 /src/ui/assets/icon.ico
 # icon-128.png is embedded into the binary at compile time, so keep a copy in

@@ -35,6 +35,22 @@
   const docTitle = $("doc-title");
   const btnUndo = $("btn-undo");
   const btnRedo = $("btn-redo");
+  const findBar = $("findbar");
+  const findInput = $("find-input");
+  const replaceInput = $("replace-input");
+  const findCount = $("find-count");
+  const findField = findInput.closest(".find-field");
+  const findNote = $("find-note");
+  const findReplaceRow = $("find-replace-row");
+  const btnFindExpand = $("find-expand");
+  const btnFindPrev = $("find-prev");
+  const btnFindNext = $("find-next");
+  const btnFindCase = $("find-case");
+  const btnFindWord = $("find-word");
+  const btnFindClose = $("find-close");
+  const btnReplaceOne = $("replace-one");
+  const btnReplaceAll = $("replace-all");
+  const hlInner = document.querySelector("#editor-highlights .hl-inner");
 
   let splitRatio = 0.5;
   let currentView = "split";
@@ -65,6 +81,8 @@
       if (html !== lastRenderedHtml) {
         reading.innerHTML = html;
         lastRenderedHtml = html;
+        // The rebuild threw away any search marks; put them back.
+        if (find.open && find.target === "preview") refreshFind({ keepIndex: true });
       }
       if (editor.value === source) previewStale = false;
     } catch (e) {
@@ -135,6 +153,7 @@
       editor.focus();
       markDirty();
       scheduleRender();
+      findTextReplaced(); // the markup shifted every offset after it
       await commitHistory(); // record the inserted markup as one undo step
     } catch (err) {
       log("edit " + kind + " failed: " + err);
@@ -184,6 +203,7 @@
     scheduleRender();
     editor.focus();
     updateHistoryButtons(snap);
+    findTextReplaced();
   }
 
   async function doUndo() {
@@ -201,6 +221,470 @@
     } catch (e) { log("redo failed: " + e); }
   }
 
+  /* ---- Find and replace ------------------------------------------------ */
+  // The matching itself is Nim's (core/search): it returns UTF-16 code unit
+  // offsets, which is exactly what the textarea's selection API speaks, so the
+  // results can be used verbatim. This side decides WHAT to search — the
+  // markdown source normally, the rendered text when Preview is all you can
+  // see — then paints the matches and moves the selection.
+
+  const find = {
+    open: false,
+    replaceShown: false,
+    matchCase: false,
+    wholeWord: false,
+    target: "editor",   // "editor" (markdown source) | "preview" (rendered text)
+    matches: [],        // [[start, stop], ...], UTF-16 offsets into the target
+    total: 0,           // true match count, which can exceed matches.length
+    capped: false,      // more matches exist than were returned
+    index: -1,          // the current match, -1 when there is none
+    token: 0,           // discards results of superseded searches
+    timer: null,
+    pending: null,      // opts of the debounced refresh, so it can be flushed
+  };
+
+  function findTargetForView(view) {
+    // Preview-only hides the editor, so search what the reader can actually
+    // see. Text and Split both show the source, which is what replace needs.
+    return view === "preview" ? "preview" : "editor";
+  }
+
+  /* -- The editor's highlight layer -- */
+
+  // The mirror only has to agree with the textarea on where characters land,
+  // which means matching its wrap width exactly (clientWidth excludes the
+  // scrollbar) and following its scroll offset.
+  function syncHighlightMetrics() {
+    if (!hlInner) return;
+    hlInner.style.width = editor.clientWidth + "px";
+    hlInner.style.transform =
+      "translate(" + -editor.scrollLeft + "px, " + -editor.scrollTop + "px)";
+  }
+
+  function clearEditorHighlights() {
+    if (hlInner) hlInner.textContent = "";
+  }
+
+  function renderEditorHighlights() {
+    if (!hlInner) return;
+    if (!find.matches.length) { clearEditorHighlights(); return; }
+    const text = editor.value;
+    let html = "";
+    let pos = 0;
+    for (let i = 0; i < find.matches.length; i++) {
+      const s = find.matches[i][0], e = find.matches[i][1];
+      if (s < pos || e > text.length) continue; // stale offsets: skip, never slice wrongly
+      html += escapeHtml(text.slice(pos, s)) +
+        (i === find.index ? '<mark class="current">' : "<mark>") +
+        escapeHtml(text.slice(s, e)) + "</mark>";
+      pos = e;
+    }
+    // The trailing zero-width space keeps a final empty line from collapsing,
+    // so the mirror stays exactly as tall as the textarea's content.
+    hlInner.innerHTML = html + escapeHtml(text.slice(pos)) + "​";
+    syncHighlightMetrics();
+  }
+
+  function scrollEditorToCurrent() {
+    const mark = hlInner && hlInner.querySelector("mark.current");
+    if (!mark) return;
+    // offsetTop ignores the layer's transform, so it is the match's position in
+    // the unscrolled text — exactly the scrollTop that puts it at the top.
+    const top = mark.offsetTop;
+    const height = mark.offsetHeight;
+    const view = editor.clientHeight;
+    if (top < editor.scrollTop || top + height > editor.scrollTop + view) {
+      editor.scrollTop = Math.max(0, top - (view - height) / 2);
+    }
+    syncHighlightMetrics();
+  }
+
+  /* -- The preview's highlight marks -- */
+
+  // Every text node under #reading, with where each one starts in the
+  // concatenated text. JS string offsets are UTF-16, so they line up with what
+  // Nim returns without conversion.
+  function previewTextMap() {
+    // Markdown may carry raw HTML through, so skip the text inside elements
+    // that render nothing: matching there would count invisible hits.
+    const walker = document.createTreeWalker(reading, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        const tag = n.parentNode && n.parentNode.nodeName;
+        return (tag === "SCRIPT" || tag === "STYLE")
+          ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes = [];
+    let text = "";
+    let node;
+    while ((node = walker.nextNode())) {
+      nodes.push({ node: node, start: text.length });
+      text += node.nodeValue;
+    }
+    return { text: text, nodes: nodes };
+  }
+
+  function clearPreviewHighlights() {
+    const marks = reading.querySelectorAll("mark.zm-hit");
+    if (!marks.length) return;
+    for (const m of marks) {
+      const parent = m.parentNode;
+      while (m.firstChild) parent.insertBefore(m.firstChild, m);
+      parent.removeChild(m);
+    }
+    reading.normalize(); // stitch the split text nodes back together
+  }
+
+  function applyPreviewHighlights() {
+    clearPreviewHighlights();
+    if (!find.matches.length) return;
+    const map = previewTextMap();
+    // Walk nodes and matches together (both are in document order) and collect
+    // the piece of each match that falls inside each node. A match spanning an
+    // element boundary simply becomes one mark per node it crosses.
+    const perNode = new Map();
+    let mi = 0;
+    for (const entry of map.nodes) {
+      const nStart = entry.start;
+      const nEnd = nStart + entry.node.nodeValue.length;
+      while (mi < find.matches.length && find.matches[mi][1] <= nStart) mi++;
+      for (let k = mi; k < find.matches.length && find.matches[k][0] < nEnd; k++) {
+        const s = Math.max(find.matches[k][0], nStart) - nStart;
+        const e = Math.min(find.matches[k][1], nEnd) - nStart;
+        if (e <= s) continue;
+        if (!perNode.has(entry.node)) perNode.set(entry.node, []);
+        perNode.get(entry.node).push({ s: s, e: e, cur: k === find.index });
+      }
+    }
+    for (const [node, segs] of perNode) {
+      const value = node.nodeValue;
+      const frag = document.createDocumentFragment();
+      let pos = 0;
+      for (const seg of segs) {
+        if (seg.s > pos) frag.appendChild(document.createTextNode(value.slice(pos, seg.s)));
+        const mark = document.createElement("mark");
+        mark.className = seg.cur ? "zm-hit current" : "zm-hit";
+        mark.textContent = value.slice(seg.s, seg.e);
+        frag.appendChild(mark);
+        pos = seg.e;
+      }
+      if (pos < value.length) frag.appendChild(document.createTextNode(value.slice(pos)));
+      if (node.parentNode) node.parentNode.replaceChild(frag, node);
+    }
+    const current = reading.querySelector("mark.zm-hit.current");
+    if (current) current.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+
+  /* -- Painting, selection, and the bar's own state -- */
+
+  function paintMatches() {
+    if (find.target === "editor") {
+      clearPreviewHighlights();
+      renderEditorHighlights();
+    } else {
+      clearEditorHighlights();
+      applyPreviewHighlights();
+    }
+  }
+
+  function selectCurrentMatch() {
+    if (find.index < 0 || find.index >= find.matches.length) return;
+    if (find.target !== "editor") return; // the preview scrolls its mark instead
+    const m = find.matches[find.index];
+    try { editor.setSelectionRange(m[0], m[1]); } catch (e) {}
+    scrollEditorToCurrent();
+  }
+
+  function updateFindUi() {
+    const query = findInput.value;
+    const n = find.matches.length;
+    findField.classList.toggle("none", query.length > 0 && find.total === 0);
+    if (!query.length) findCount.textContent = "";
+    else if (find.total === 0) findCount.textContent = "No results";
+    else findCount.textContent = (find.index + 1) + " / " + find.total;
+    findCount.title = find.capped
+      ? "Only the first " + n + " of " + find.total + " matches are highlighted."
+      : "";
+    btnFindPrev.disabled = n === 0;
+    btnFindNext.disabled = n === 0;
+    const canReplace = find.target === "editor";
+    replaceInput.disabled = !canReplace;
+    btnReplaceOne.disabled = !canReplace || n === 0;
+    btnReplaceAll.disabled = !canReplace || n === 0;
+    findNote.textContent = canReplace
+      ? (find.capped ? "First " + n + " matches shown" : "")
+      : "Searching the rendered text";
+  }
+
+  async function refreshFind(opts) {
+    opts = opts || {};
+    const query = findInput.value;
+    const token = ++find.token;
+    if (!find.open || !query.length) {
+      find.matches = []; find.total = 0; find.capped = false; find.index = -1;
+      clearEditorHighlights();
+      clearPreviewHighlights();
+      updateFindUi();
+      return;
+    }
+    const haystack = find.target === "preview" ? previewTextMap().text : editor.value;
+    let res = null;
+    try {
+      res = await window.searchFind(haystack, query, find.matchCase, find.wholeWord);
+    } catch (e) {
+      log("searchFind failed: " + e);
+    }
+    // A later search (or a close) overtook this one: drop the stale answer.
+    if (token !== find.token || !find.open) return;
+    const flat = (res && res.offsets) || [];
+    const matches = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) matches.push([flat[i], flat[i + 1]]);
+    find.matches = matches;
+    find.total = (res && res.total) || 0;
+    find.capped = !!(res && res.capped);
+    if (!matches.length) {
+      find.index = -1;
+    } else if (opts.keepIndex && find.index >= 0) {
+      find.index = Math.min(find.index, matches.length - 1);
+    } else {
+      // Start from where the user is: the first match at or after the caret,
+      // wrapping to the top when there is none below it.
+      const anchor = typeof opts.anchor === "number" ? opts.anchor
+        : (find.target === "editor"
+            ? Math.min(editor.selectionStart, editor.selectionEnd) : 0);
+      let i = -1;
+      for (let k = 0; k < matches.length; k++) {
+        if (matches[k][0] >= anchor) { i = k; break; }
+      }
+      find.index = i < 0 ? 0 : i;
+    }
+    paintMatches();
+    if (opts.select !== false) selectCurrentMatch();
+    updateFindUi();
+  }
+
+  function findState() {
+    return {
+      open: find.open,
+      target: find.target,
+      total: find.total,
+      shown: find.matches.length,
+      index: find.index,
+      capped: find.capped,
+      count: findCount.textContent,
+      editorMarks: hlInner ? hlInner.querySelectorAll("mark").length : 0,
+      previewMarks: reading.querySelectorAll("mark.zm-hit").length,
+      // What the preview actually marked: proves the rendered text was searched
+      // with rendered offsets, not the source's.
+      previewMarkText: (function () {
+        const m = reading.querySelector("mark.zm-hit.current");
+        return m ? m.textContent : "";
+      })(),
+      selStart: editor.selectionStart,
+      selEnd: editor.selectionEnd,
+      selected: editor.value.slice(editor.selectionStart, editor.selectionEnd),
+      text: editor.value,
+    };
+  }
+
+  function scheduleFindRefresh(opts) {
+    if (find.timer) clearTimeout(find.timer);
+    find.pending = opts;
+    find.timer = setTimeout(() => { find.timer = null; refreshFind(find.pending); }, 90);
+  }
+
+  // Run a debounced refresh right now. Pressing Enter straight after typing
+  // must step through the matches of what was just typed, not the previous
+  // query's list.
+  function flushFindRefresh() {
+    if (!find.timer) return Promise.resolve();
+    clearTimeout(find.timer);
+    find.timer = null;
+    return refreshFind(find.pending);
+  }
+
+  function gotoMatch(delta) {
+    const n = find.matches.length;
+    if (!n) return;
+    find.index = ((find.index + delta) % n + n) % n;
+    paintMatches();
+    selectCurrentMatch();
+    updateFindUi();
+  }
+
+  function showReplaceRow(on) {
+    find.replaceShown = on;
+    findReplaceRow.hidden = !on;
+    btnFindExpand.setAttribute("aria-expanded", on ? "true" : "false");
+    syncHighlightMetrics();
+  }
+
+  function openFind(withReplace) {
+    // Replace edits the source, which Preview-only does not show: move to Split
+    // so there is something to replace in.
+    if (withReplace && currentView === "preview") setView("split");
+    const wasOpen = find.open;
+    find.open = true;
+    findBar.hidden = false;
+    find.target = findTargetForView(currentView);
+    if (withReplace) showReplaceRow(true);
+    // Bring the controls in line with the target NOW, not after the search
+    // round trip: a disabled input cannot take focus, so the replace box would
+    // otherwise stay unfocusable and the replacement text would land in the
+    // find box instead.
+    updateFindUi();
+    // Seed from the editor selection, the way every editor does — but only on
+    // a fresh open. Re-opening would otherwise overwrite the query being typed
+    // with the match this controller itself selected.
+    if (!wasOpen && find.target === "editor") {
+      const sel = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+      if (sel.length > 0 && sel.length <= 200 && sel.indexOf("\n") < 0) {
+        findInput.value = sel;
+      }
+    }
+    // Ctrl+H with something already in the find box means "I know what I am
+    // looking for, let me type what it becomes": focus the replacement instead.
+    const focusEl = withReplace && findInput.value.length > 0 ? replaceInput : findInput;
+    focusEl.focus();
+    focusEl.select();
+    syncHighlightMetrics();
+    return refreshFind();
+  }
+
+  function closeFind() {
+    if (!find.open) return;
+    find.open = false;
+    find.token++; // any search still in flight must not repaint after this
+    findBar.hidden = true;
+    find.matches = []; find.total = 0; find.capped = false; find.index = -1;
+    clearEditorHighlights();
+    clearPreviewHighlights();
+    if (currentView !== "preview") editor.focus();
+  }
+
+  // The document was replaced wholesale (undo, redo, a file opened, New) rather
+  // than typed into, so no input event fired: the matches must be recomputed or
+  // the highlight layer would keep painting the old text's offsets.
+  // Repaint only: the caller (undo, a freshly opened file, a formatting
+  // shortcut) has just placed the caret deliberately, so the selection is left
+  // exactly where it put it.
+  function findTextReplaced() {
+    if (find.open && find.target === "editor") {
+      refreshFind({ keepIndex: true, select: false });
+    }
+  }
+
+  function onFindViewChanged() {
+    if (!find.open) return;
+    const target = findTargetForView(currentView);
+    if (target !== find.target) {
+      // Leave no marks behind in the pane we are no longer searching.
+      if (target === "editor") clearPreviewHighlights(); else clearEditorHighlights();
+      find.target = target;
+      updateFindUi(); // enable/disable the replace controls for the new target
+    }
+    syncHighlightMetrics();
+    refreshFind({ keepIndex: true });
+  }
+
+  async function doReplaceOne() {
+    if (find.target !== "editor" || !findInput.value.length) return;
+    // Capture before any await, as runEdit does, so nothing shifts underneath.
+    const text = editor.value;
+    const s = editor.selectionStart;
+    const e = editor.selectionEnd;
+    await commitHistory(); // pending typing becomes its own undo step
+    let res = null;
+    try {
+      res = await window.searchReplace(text, findInput.value, replaceInput.value,
+                                       find.matchCase, find.wholeWord, s, e);
+    } catch (err) {
+      log("searchReplace failed: " + err);
+      return;
+    }
+    if (res && res.replaced) {
+      editor.value = res.text;
+      editor.selectionStart = res.selStart;
+      editor.selectionEnd = res.selEnd;
+      markDirty();
+      scheduleRender();
+      await commitHistory(); // the replacement is one undo step
+      await refreshFind({ anchor: res.selStart });
+    } else {
+      // The selection was not on a match: move to one, so pressing Replace
+      // again does the obvious thing.
+      await refreshFind({ keepIndex: true });
+    }
+  }
+
+  async function doReplaceAll() {
+    if (find.target !== "editor" || !findInput.value.length) return;
+    const text = editor.value;
+    await commitHistory();
+    let res = null;
+    try {
+      res = await window.searchReplaceAll(text, findInput.value, replaceInput.value,
+                                          find.matchCase, find.wholeWord);
+    } catch (err) {
+      log("searchReplaceAll failed: " + err);
+      return;
+    }
+    if (!res || !res.replaced) return;
+    editor.value = res.text;
+    editor.selectionStart = res.selStart;
+    editor.selectionEnd = res.selEnd;
+    markDirty();
+    scheduleRender();
+    await commitHistory(); // every replacement together is a single undo step
+    log("replaced " + res.replaced + " occurrence(s)");
+    await refreshFind({ anchor: res.selStart });
+  }
+
+  /* -- Wiring -- */
+
+  editor.addEventListener("scroll", syncHighlightMetrics);
+  window.addEventListener("resize", syncHighlightMetrics);
+  if (window.ResizeObserver) {
+    // The editor resizes when the divider moves, the window changes, or this
+    // very bar opens; the mirror's wrap width has to follow.
+    new ResizeObserver(() => {
+      syncHighlightMetrics();
+      if (find.open && find.target === "editor") scrollEditorToCurrent();
+    }).observe(editor);
+  }
+
+  $("btn-find").addEventListener("click", () => openFind(false));
+  btnFindClose.addEventListener("click", closeFind);
+  btnFindNext.addEventListener("click", () => gotoMatch(1));
+  btnFindPrev.addEventListener("click", () => gotoMatch(-1));
+  btnFindExpand.addEventListener("click", () => showReplaceRow(!find.replaceShown));
+  btnReplaceOne.addEventListener("click", doReplaceOne);
+  btnReplaceAll.addEventListener("click", doReplaceAll);
+
+  btnFindCase.addEventListener("click", () => {
+    find.matchCase = !find.matchCase;
+    btnFindCase.setAttribute("aria-pressed", find.matchCase ? "true" : "false");
+    refreshFind();
+  });
+  btnFindWord.addEventListener("click", () => {
+    find.wholeWord = !find.wholeWord;
+    btnFindWord.setAttribute("aria-pressed", find.wholeWord ? "true" : "false");
+    refreshFind();
+  });
+
+  findInput.addEventListener("input", () => scheduleFindRefresh());
+  findInput.addEventListener("keydown", async (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    await flushFindRefresh();
+    gotoMatch(ev.shiftKey ? -1 : 1);
+  });
+  replaceInput.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    if (ev.ctrlKey || ev.metaKey) doReplaceAll(); else doReplaceOne();
+  });
+
   /* ---- View modes ------------------------------------------------------ */
 
   function setView(view, persist) {
@@ -215,6 +699,8 @@
     else { editorPane.style.flex = ""; previewPane.style.flex = ""; }
     // Catch up on renders skipped while the preview was hidden.
     if (view !== "text" && previewStale) doRender();
+    // Which pane the find bar searches follows the view.
+    onFindViewChanged();
     if (persist !== false) persist_state();
   }
 
@@ -326,6 +812,7 @@
           await doRender();
           await resetHistory("");
           editor.focus();
+          findTextReplaced();
         }
       } else if (action === "open") {
         const res = await window.menuOpen(dirty, editor.value);
@@ -375,6 +862,7 @@
     await doRender();
     await resetHistory(editor.value);
     editor.focus();
+    findTextReplaced();
   }
 
   async function openDroppedPath(path) {
@@ -482,34 +970,45 @@
 
   /* ---- Editor events --------------------------------------------------- */
 
-  editor.addEventListener("input", () => { markDirty(); scheduleRender(); scheduleCommit(); });
-
-  editor.addEventListener("keydown", (ev) => {
-    const mod = ev.ctrlKey || ev.metaKey;
-    if (!mod) return;
-    const k = ev.key.toLowerCase();
-    if (k === "b") { ev.preventDefault(); runEdit("bold"); }
-    else if (k === "i") { ev.preventDefault(); runEdit("italic"); }
-    else if (k === "u") { ev.preventDefault(); runEdit("underline"); }
-    else if (k === "z" && ev.shiftKey) { ev.preventDefault(); doRedo(); }
-    else if (k === "z") { ev.preventDefault(); doUndo(); }
-    else if (k === "y") { ev.preventDefault(); doRedo(); }
-    else if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
-    else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
-    else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
-    else if (k === "n") { ev.preventDefault(); doFileAction("new"); }
+  editor.addEventListener("input", () => {
+    markDirty();
+    scheduleRender();
+    scheduleCommit();
+    // The text moved under the matches, so recompute them — but never move the
+    // selection while someone is typing: that would yank the caret onto the
+    // current match and the next keystroke would overwrite it.
+    if (find.open && find.target === "editor") {
+      scheduleFindRefresh({ keepIndex: true, select: false });
+    }
   });
 
-  // Also catch accelerators when focus is not in the editor.
+  // One handler for every accelerator, wherever focus happens to be. The
+  // formatting shortcuts only make sense in the editor; the rest are global.
   document.addEventListener("keydown", (ev) => {
-    if (ev.target === editor) return;
     const mod = ev.ctrlKey || ev.metaKey;
     if (!mod) return;
-    const k = ev.key.toLowerCase();
-    if (k === "z" && ev.shiftKey) { ev.preventDefault(); doRedo(); }
-    else if (k === "z") { ev.preventDefault(); doUndo(); }
-    else if (k === "y") { ev.preventDefault(); doRedo(); }
-    else if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
+    const k = (ev.key || "").toLowerCase();
+    const inEditor = ev.target === editor;
+    // A text field other than the editor: the find and replace boxes.
+    const inTextField = !inEditor && ev.target && ev.target.tagName === "INPUT";
+
+    if (inEditor) {
+      if (k === "b") { ev.preventDefault(); runEdit("bold"); return; }
+      if (k === "i") { ev.preventDefault(); runEdit("italic"); return; }
+      if (k === "u") { ev.preventDefault(); runEdit("underline"); return; }
+    }
+    if (k === "f") { ev.preventDefault(); openFind(false); return; }
+    // Ctrl+H is the editor convention for replace; in a GTK text field it would
+    // otherwise delete the previous character, so it must be swallowed here.
+    if (k === "h") { ev.preventDefault(); openFind(true); return; }
+    // Leave a text field's own undo stack alone; Ctrl+Z there should undo the
+    // typing in that box, not roll back the document.
+    if (!inTextField) {
+      if (k === "z" && ev.shiftKey) { ev.preventDefault(); doRedo(); return; }
+      if (k === "z") { ev.preventDefault(); doUndo(); return; }
+      if (k === "y") { ev.preventDefault(); doRedo(); return; }
+    }
+    if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
     else if (k === "n") { ev.preventDefault(); doFileAction("new"); }
@@ -583,7 +1082,12 @@
   });
   $("set-close").addEventListener("click", closeSettings);
   settingsOverlay.addEventListener("mousedown", (ev) => { if (ev.target === settingsOverlay) closeSettings(); });
-  window.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !settingsOverlay.hidden) closeSettings(); });
+  // Escape backs out of whatever is open, innermost first.
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    if (!settingsOverlay.hidden) { closeSettings(); return; }
+    if (find.open) closeFind();
+  });
 
   /* ---- Middle-click autoscroll (like a Windows browser) ---------------- */
 
@@ -654,6 +1158,7 @@
     // setView just cleared, capping the editor at the split width even in
     // Text view until a view button is clicked.
     setView(currentView, false);
+    syncHighlightMetrics();
     await doRender();
     // Open a file passed on the command line (e.g. opened from the file manager).
     try {
@@ -690,6 +1195,30 @@
     },
     setRatio: function (r) { splitRatio = r; applyRatio(); return splitRatio; },
     markClean: function () { setTitle(baseTitle, false); return true; },
+    // Find and replace, driven step by step so the self-test can assert on the
+    // state after each one rather than racing the debounce.
+    findOpen: async function (withReplace) { await openFind(!!withReplace); return findState(); },
+    findClose: function () { closeFind(); return findState(); },
+    findQuery: async function (q, matchCase, wholeWord) {
+      findInput.value = q;
+      find.matchCase = !!matchCase;
+      find.wholeWord = !!wholeWord;
+      await refreshFind();
+      return findState();
+    },
+    findNext: function () { gotoMatch(1); return findState(); },
+    findPrev: function () { gotoMatch(-1); return findState(); },
+    findReplaceOne: async function (text) {
+      replaceInput.value = text;
+      await doReplaceOne();
+      return findState();
+    },
+    findReplaceAll: async function (text) {
+      replaceInput.value = text;
+      await doReplaceAll();
+      return findState();
+    },
+    findState: function () { return findState(); },
     ready: false,
   };
 

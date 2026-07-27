@@ -137,6 +137,22 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
     the selection; with nothing selected they insert the markers and put the caret between
     them.
   - The link and image toolbar buttons insert sample markdown you can edit in place.
+- **Find and replace.** **Ctrl+F** opens the find bar (so does the magnifier button);
+  **Ctrl+H** opens it with the replace row showing. Every match in the document is
+  highlighted at once, with the one you are on picked out in the accent color, and the
+  bar counts them ("3 / 17"). **Enter** and **Shift+Enter** step forward and back,
+  wrapping around the ends; **Esc** closes the bar. Two toggles narrow the search:
+  **Aa** makes it case-sensitive, **ab** matches whole words only, so searching `cat`
+  no longer finds it inside `category`. Selecting a word before pressing Ctrl+F starts
+  the search with it.
+
+  **Replace** swaps the match you are on and moves to the next; **Replace All** does the
+  whole document in one go. Either way it is a single undo step, so one **Ctrl+Z** puts
+  everything back. Replacements are literal text — there is no pattern syntax to escape.
+
+  In **Preview**, where the raw text is not on screen, find searches the rendered
+  reading text instead and highlights it there; replace is unavailable in that view
+  (Ctrl+H switches to Split so there is something to edit).
 - **Undo / redo** with the toolbar buttons or **Ctrl+Z** and **Ctrl+Y** (**Ctrl+Shift+Z**
   also redoes). History is bounded by memory (about 100 MB), not by a step count: only when
   that is exceeded are the oldest edits dropped.
@@ -189,6 +205,9 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
   failing, but those actions will not work until you install one of them.
 - The markdown renderer supports CommonMark plus GitHub tables and strikethrough. Task
   lists and bare-URL autolinking are not rendered.
+- Find and replace matches literal text only; there is no regular-expression mode. In a
+  document with an unusually large number of matches (over ten thousand), the count is
+  still exact but only the first ten thousand are highlighted and reachable with Enter.
 - The app renders your own local document and intentionally lets raw HTML in the markdown
   pass through (this is how the underline shortcut works). It does not sanitize HTML.
 
