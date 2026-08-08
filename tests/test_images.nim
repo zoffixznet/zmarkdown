@@ -202,6 +202,31 @@ suite "rewriting a rendered fragment":
     check html.startsWith("before <b>x</b> <img ")
     check html.endsWith("> after <em>y</em>")
 
+  test "a gallery keeps every one of its images reachable":
+    # The registry describes the newest render, so no picture is forgotten
+    # while it is still on the page, however many the document holds.
+    var frag = ""
+    var names: seq[string]
+    for i in 0 ..< 600:
+      let name = "gallery" & $i & ".png"
+      names.add(name)
+      writeFile(tmpDir / name, pngBytes)
+      frag.add "<img src=\"" & name & "\">"
+    let html = rewriteImages(frag, tmpDir, reg)
+    check reg.len == 600
+    check html.count("data-zm-img=") == 600
+    # Both ends of the document resolve, not just the tail.
+    let key = "data-zm-img=\""
+    let firstTok = html[html.find(key) + key.len ..< html.find('"', html.find(key) + key.len)]
+    let lastStart = html.rfind(key) + key.len
+    let lastTok = html[lastStart ..< html.find('"', lastStart)]
+    check imageDataUri(reg, firstTok).uri.len > 0
+    check imageDataUri(reg, lastTok).uri.len > 0
+    # A render without them forgets them again.
+    discard rewriteImages("<p>no pictures here</p>", tmpDir, reg)
+    check reg.len == 0
+    for name in names: removeFile(tmpDir / name)
+
   test "several images in one document":
     let html = rewriteImages(
       "<img src=\"pic.png\"><img src=\"nope.png\"><img src=\"https://x/y.png\">",

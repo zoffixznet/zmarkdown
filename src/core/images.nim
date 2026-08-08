@@ -22,12 +22,6 @@ const
   MaxImageBytes* = 16 * 1024 * 1024
     ## Largest image inlined into the preview. The bytes cross the bridge
     ## base64-encoded, and nothing readable needs more than this.
-  MaxTrackedImages = 4096
-    ## Upper bound on remembered tokens, so a long session spent scrolling
-    ## through image-heavy documents cannot grow the table without limit. A
-    ## token is a path and a hash, so this costs a few hundred kilobytes at
-    ## worst - set far above any document anyone will write, since evicting an
-    ## image that is still on screen would blank it.
 
   MissingImageSvg = """<svg xmlns="http://www.w3.org/2000/svg" width="128" height="96" viewBox="0 0 128 96"><rect width="128" height="96" rx="6" fill="#8a8a8a" fill-opacity=".10"/><path d="M20 72 46 44l14 14 12-10 22 24z" fill="#8a8a8a" fill-opacity=".45"/><circle cx="44" cy="30" r="7" fill="#8a8a8a" fill-opacity=".45"/><path d="M28 22 100 74" stroke="#b3261e" stroke-opacity=".7" stroke-width="5" stroke-linecap="round"/></svg>"""
 
@@ -295,13 +289,6 @@ proc register(reg: var ImageRegistry, path: string, size: int64,
   h = h !& hash(mtime.nanosecond)
   result = toHex(cast[uint64](!$h), 16)
   reg.tokens[result] = path
-  if reg.tokens.len > MaxTrackedImages:
-    var oldest = ""
-    for k in reg.tokens.keys:
-      oldest = k
-      break
-    if oldest.len > 0:
-      reg.tokens.del(oldest)
 
 func missingAttrs(reason: string): string =
   ## The `src`/`data-zm-missing` pair that replaces an image we cannot show.
@@ -369,6 +356,13 @@ proc rewriteImages*(html, baseDir: string, reg: var ImageRegistry): string =
   ## Rewrite every local image in a rendered HTML fragment so the page can show
   ## it. `baseDir` is the directory relative paths are resolved against - the
   ## open document's own directory.
+  ##
+  ## The registry is rebuilt from scratch here, so it holds exactly the images
+  ## the newest render refers to: it cannot grow without limit over a session,
+  ## and no picture is ever forgotten while it is still on the page (which would
+  ## blank it). A token is the same string whenever the file behind it is
+  ## unchanged, so rebuilding costs the front end nothing.
+  reg.tokens.clear()
   if not hasImgTag(html):
     return html  # the overwhelmingly common case: no copy, no scanning
   result = newStringOfCap(html.len + 64)
