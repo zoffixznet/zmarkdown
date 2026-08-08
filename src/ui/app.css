@@ -637,6 +637,15 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
   border: 1px solid var(--rule);
 }
 
+/* An image that could not be shown (no such file, too large to inline): a
+   dashed frame around the placeholder glyph. Hovering it says why. */
+.reading img[data-zm-missing] {
+  border-style: dashed;
+  background: var(--panel);
+  opacity: 0.85;
+  padding: 0.35rem;
+}
+
 /* Horizontal rule as a centered asterism, a manuscript touch. */
 .reading hr {
   border: none;

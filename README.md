@@ -160,6 +160,20 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   File menu has the same actions plus Settings and Exit. If you have unsaved changes when
   starting a new document, opening a file, or exiting, a prompt lets you save, discard, or
   cancel.
+- **Images.** `![alt text](picture.png)` shows the picture in the rendered pane. A relative
+  path is resolved against the folder the document itself is in (the working directory for a
+  document that has never been saved), so a file and the pictures beside it can be moved
+  together; absolute paths, `file://` URLs, and `~/` all work as well. A name with spaces or
+  accents in it is found either way you write it in markdown — `![a](<my picture.png>)` or
+  `![a](my%20picture.png)`.
+  `http://` and `https://` images are fetched from the network, the way a browser would.
+  An image that cannot be shown — no such file, or one too large to display (over 16 MB) —
+  becomes a dashed placeholder that says which it was when you hover it, so a wrong path is
+  visible rather than silent.
+- **Opening from the command line.** `zmarkdown notes.md` opens that file. A path that does
+  not exist yet is not an error: the editor starts empty under that name and writes the file
+  the first time you save, creating any missing folders along the way. So
+  `zmarkdown ideas/2026/plan.md` is as good a way to start a document as to open one.
 - **Drag and drop.** Drop a markdown file onto the window to open it. Setting ZMarkdown as
   the handler for markdown files also lets you open them by double-clicking in your file
   manager.
@@ -203,13 +217,21 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
 - Native dialogs require `kdialog` or `zenity` to be installed. Without either, open, save,
   and confirmation dialogs cannot be shown; the app logs this and keeps running rather than
   failing, but those actions will not work until you install one of them.
-- The markdown renderer supports CommonMark plus GitHub tables and strikethrough. Task
-  lists and bare-URL autolinking are not rendered.
+- The markdown renderer supports CommonMark plus GitHub tables and strikethrough, and turns
+  task list markers into read-only checkboxes. Bare-URL autolinking is not rendered.
 - Find and replace matches literal text only; there is no regular-expression mode. In a
   document with an unusually large number of matches (over ten thousand), the count is
   still exact but only the first ten thousand are highlighted and reachable with Enter.
 - The app renders your own local document and intentionally lets raw HTML in the markdown
   pass through (this is how the underline shortcut works). It does not sanitize HTML.
+- Images appear in the rendered pane only; the raw editor stays plain text. A local file is
+  shown only if it is a recognized image format and under 16 MB; anything else becomes a
+  placeholder. A document that references `http://` or `https://` images causes network
+  requests for them while it is being previewed.
+- On Windows, a file dropped onto the window arrives as content without a path (the browser
+  engine does not hand one over), so it opens as an unsaved document: Save asks where to put
+  it, and its relative image paths only resolve once you have saved it somewhere. Opening
+  the same file through Ctrl+O or the file manager keeps its path throughout.
 
 ## See also
 

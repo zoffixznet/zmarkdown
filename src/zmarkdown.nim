@@ -11,7 +11,7 @@ import std/osproc
 import std/streams
 import std/strtabs
 
-const AppVersion = "1.1.0"
+const AppVersion = "1.2.0"
 
 import webview
 
@@ -22,6 +22,7 @@ import core/files
 import core/dialogs
 import core/history as histmod
 import core/search as srch
+import core/images as imgs
 
 # Direct native calls for window geometry and the maximized state. On Linux we
 # track size and maximized live through GTK signals, so the values are captured
@@ -508,6 +509,9 @@ type
 
 var app: App
 
+# Local images the preview may ask for, by the token the rendered HTML carries.
+var imageReg = initImageRegistry()
+
 # Plain (non-GC) handles for the watchdog thread, which must be gcsafe and so
 # cannot touch the GC'd `app`. The webview handle is just a pointer.
 var wdWebview: Webview
@@ -535,13 +539,49 @@ proc editResultJson(r: EditResult): JsonNode =
 # Each returns a JSON string (webview delivers it to JS as a resolved Promise).
 # JS awaits them. Errors are caught here so a bad call cannot crash the loop.
 
+proc docBaseDir(): string =
+  ## What a relative image path in the document is relative to: the directory of
+  ## the open file, or the working directory for a document that has none.
+  if app.currentPath.len > 0:
+    app.currentPath.parentDir()
+  else:
+    try: getCurrentDir()
+    except CatchableError: ""
+
 proc jsRender(id: string; req: JsonNode): string =
   ## render(src) -> HTML fragment. Never raises; degrades to an inline error.
   let src = if req.len > 0 and req[0].kind == JString: req[0].getStr() else: ""
   let outcome = md.renderOutcome(src)
   if not outcome.ok:
     vlog("render error: " & outcome.error)
-  result = $ %* outcome.html
+  var html = outcome.html
+  # The page has no base URL and cannot read the disk, so a local image is
+  # replaced by a token it redeems through imageData below. Remote and inline
+  # sources are left for the page to load itself.
+  try:
+    html = rewriteImages(html, docBaseDir(), imageReg)
+  except CatchableError as e:
+    vlog("image resolution failed: " & e.msg)
+  result = $ %* html
+
+proc jsImageData(id: string; req: JsonNode): string =
+  ## imageData(token) -> {uri, error}. The bytes of one local image, as a data:
+  ## URI. A token whose file has gone away since the render was made gets the
+  ## same placeholder a missing image gets, so the preview always shows
+  ## something rather than an empty gap - and an empty token asks for that
+  ## placeholder deliberately, which is how the page dresses up an image it
+  ## failed to fetch by itself.
+  var r: tuple[uri, error: string] = ("", "Image could not be read")
+  try:
+    if req.len > 0 and req[0].kind == JString:
+      r = imageDataUri(imageReg, req[0].getStr())
+  except CatchableError as e:
+    vlog("imageData failed: " & e.msg)
+    r = ("", "Image could not be read")
+  if r.uri.len == 0:
+    vlog("imageData: " & r.error)
+    return $ %*{"uri": missingImageUri, "error": r.error}
+  $ %*{"uri": r.uri, "error": ""}
 
 proc jsApplyEdit(id: string; req: JsonNode): string =
   ## applyEdit(kind, text, selStart, selEnd) -> {text, selStart, selEnd}
@@ -654,11 +694,35 @@ proc jsLoadInitialState(id: string; req: JsonNode): string =
   result = $ app.ui.toJson()
 
 proc jsStartupFile(id: string; req: JsonNode): string =
-  ## startupFile() -> {path}. A file passed on the command line (e.g. opened from
-  ## the file manager), or empty. Cleared after the first read so it does not
-  ## reopen on any later query.
-  result = $ %*{"path": app.startupFile}
+  ## startupFile() -> {path, text, title, created}. The file passed on the
+  ## command line (e.g. opened from the file manager), read and ready for the
+  ## editor, or `{path: ""}` when there was none.
+  ##
+  ## A path that does not exist yet is not an error: the editor opens empty
+  ## under that name and the file is written on the first save, so
+  ## `zmarkdown notes.md` is a way to start a new document as well as to open
+  ## one. The startup file is cleared after this first read so it cannot reopen
+  ## later in the session.
+  let path = app.startupFile
   app.startupFile = ""
+  if path.len == 0:
+    return $ %*{"path": ""}
+  if dirExists(path):
+    logLine("open failed (" & path & "): it is a directory")
+    errorDialog("Open failed", "That path is a directory, not a file:\n" & path)
+    return $ %*{"path": ""}
+  if not fileExists(path):
+    app.currentPath = path
+    logLine("new file " & path & " (written on the first save)")
+    return $ %*{"path": path, "text": "", "title": docName(), "created": true}
+  let r = readTextFile(path)
+  if not r.ok:
+    logLine("open failed (" & path & "): " & r.error)
+    errorDialog("Open failed", r.error)
+    return $ %*{"path": ""}
+  app.currentPath = path
+  logLine("opened " & path)
+  $ %*{"path": path, "text": r.value, "title": docName(), "created": false}
 
 proc jsPersistState(id: string; req: JsonNode): string =
   ## persistState(view, ratio). Updates the in-memory state; the actual disk
@@ -753,11 +817,17 @@ proc doOpen(text: string): tuple[opened: bool, content, title: string] =
   (true, r.value, docName())
 
 proc doSaveTo(path, text: string): bool =
+  # The directory may not exist yet: a path named on the command line can point
+  # anywhere (`zmarkdown notes/today/plan.md`), and writeTextFile creates it.
+  let dir = path.parentDir()
+  let dirIsNew = dir.len > 0 and not dirExists(dir)
   let r = writeTextFile(path, text)
   if not r.ok:
     logLine("save failed: " & r.error)
     errorDialog("Save failed", r.error)
     return false
+  if dirIsNew:
+    logLine("created directory " & dir)
   app.currentPath = path
   logLine("saved " & path)
   true
@@ -957,6 +1027,7 @@ proc computeRestoreSize(): tuple[w, h: int] =
 
 proc bindAll(w: Webview) =
   discard w.bind("render", jsRender)
+  discard w.bind("imageData", jsImageData)
   discard w.bind("applyEdit", jsApplyEdit)
   discard w.bind("searchFind", jsSearchFind)
   discard w.bind("searchReplace", jsSearchReplace)
@@ -1085,6 +1156,21 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   try: writeFile(dropPath, "# Dropped\n\ndropped body\n")
   except CatchableError: discard
 
+  # A real picture beside the "document", so the preview's image handling is
+  # driven end to end: the embedded app icon is a PNG, so it doubles as one.
+  let imgName = "zmarkdown-selftest-image.png"
+  let imgPath = getTempDir() / imgName
+  try: writeFile(imgPath, iconPng)
+  except CatchableError: discard
+
+  # Launching with a file that does not exist must boot an empty document under
+  # that name and create the file on the first save. The startup file also gives
+  # the document a directory, which is what relative image paths resolve against.
+  let newPath = getTempDir() / "zmarkdown-selftest-new.md"
+  try: removeFile(newPath)
+  except CatchableError: discard
+  app.startupFile = newPath
+
   let w = setupWindow(debug = false)
 
   var failures: seq[string]
@@ -1125,6 +1211,66 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
       # Renders are skipped while the preview is hidden and caught up on switch.
       if not r{"staleOk"}.getBool():
         failures.add("hidden-preview render skip/catch-up failed")
+      # Images: a real file beside the document, a name that is not there, and a
+      # remote source the app has no business rewriting.
+      let img = r{"img"}
+      if img == nil or img.kind != JObject or img{"error"}.getStr().len > 0:
+        failures.add("image self-test did not report" &
+          (if img != nil and img{"error"}.getStr().len > 0: ": " & img{"error"}.getStr() else: ""))
+      else:
+        # What Nim handed the page: a token for the local file, a flagged
+        # placeholder for the one that is not there, the remote source verbatim.
+        let rendered = img{"html"}.getStr()
+        if not rendered.contains("data-zm-img=\""):
+          failures.add("local image was not given a token")
+        if not rendered.contains("data-zm-missing=\"Image not found"):
+          failures.add("missing image was not flagged in the rendered HTML")
+        if not rendered.contains("https://example.invalid/x.png"):
+          failures.add("remote image source did not survive rewriting")
+        let list = img{"list"}
+        if list == nil or list.kind != JArray or list.len != 3:
+          failures.add("image self-test: expected 3 images, got " &
+            $(if list == nil or list.kind != JArray: 0 else: list.len))
+        else:
+          let local = list[0]
+          if not local{"src"}.getStr().startsWith("data:image/png;base64,"):
+            failures.add("local image was not inlined (src '" & local{"src"}.getStr() & "')")
+          if not local{"ok"}.getBool():
+            failures.add("local image did not load")
+          if local{"missing"}.getStr().len > 0:
+            failures.add("local image reported as missing: " & local{"missing"}.getStr())
+          let gone = list[1]
+          if not gone{"missing"}.getStr().startsWith("Image not found"):
+            failures.add("missing image was not flagged (got '" & gone{"missing"}.getStr() & "')")
+          if not gone{"src"}.getStr().startsWith("data:image/svg+xml;base64,"):
+            failures.add("missing image got no placeholder (src '" & gone{"src"}.getStr() & "')")
+          # The remote one is left to the page, which here has no network to
+          # fetch it with; that it was passed through is asserted on the
+          # rendered HTML above, where a failed load cannot have rewritten it.
+      # Launched with a path that has no file: empty document, right title, and
+      # the first save creates it.
+      let st = r{"startup"}
+      if st == nil or st.kind != JObject:
+        failures.add("startup-file self-test did not report")
+      else:
+        if st{"error"}.getStr().len > 0:
+          failures.add("startup-file driver error: " & st{"error"}.getStr())
+        if st{"text"}.getStr().len != 0:
+          failures.add("launching with a nonexistent file did not start empty (got '" &
+            st{"text"}.getStr() & "')")
+        if st{"title"}.getStr() != extractFilename(newPath):
+          failures.add("startup title: expected '" & extractFilename(newPath) &
+            "', got '" & st{"title"}.getStr() & "'")
+        if not st{"saved"}.getBool():
+          failures.add("saving the new document reported failure")
+        if not fileExists(newPath):
+          failures.add("the first save did not create " & newPath)
+        else:
+          var content = ""
+          try: content = readFile(newPath)
+          except CatchableError: discard
+          if content != "# Created on save\n":
+            failures.add("the created file holds '" & content & "'")
       # Find and replace, driven through the real bar.
       let f = r{"find"}
       if f == nil or f.kind != JObject:
@@ -1183,6 +1329,9 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
     }
     waitReady(async function () {
       try {
+        // What launching with a file that does not exist yet left behind: an
+        // empty document titled after the file. Read before anything types.
+        var startup = { text: window.__zm.getEditorValue(), title: window.__zm.getTitle() };
         var sample = "# Heading — dash\n\nThis is **bold** and <u>under</u> and `code`.\n\n- a\n- b\n";
         await window.__zm.setEditor(sample);
         var html = window.__zm.getPreviewHtml();
@@ -1192,6 +1341,27 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
         await window.historyRecord("start EDITED", 0, 0);
         var u = await window.historyUndo();
         var undoText = (u && u.ok) ? u.text : "";
+        // Images, while the document still lives beside the test picture: one
+        // real file (relative to the document), one that is not there, and one
+        // remote source the app must hand to the page untouched.
+        var img = {};
+        try {
+          await window.__zm.setEditor(
+            "![local](" + window.__zmImgRel + ")\n\n" +
+            "![gone](zmarkdown-selftest-no-such-image.png)\n\n" +
+            "![remote](https://example.invalid/x.png)\n");
+          // What Nim rewrote, before the page touched any of it: a source the
+          // page loads itself may well fail here (there is no network in CI)
+          // and be dressed as a placeholder, which would hide what was sent.
+          img.html = window.__zm.getRenderedHtml();
+          img.list = await window.__zm.imagesLoaded();
+        } catch (e) { img.error = String(e); }
+        // Saving the document that was launched under a name with no file is
+        // what has to create it.
+        try {
+          var sv = await window.menuSave("# Created on save\n");
+          startup.saved = !!(sv && sv.saved);
+        } catch (e) { startup.error = String(e); }
         var op = await window.openPath(false, "", window.__zmDropPath);
         var dropText = (op && op.opened) ? op.text : "";
         // Exercise the real drop handler two ways: a uri-list drop (opens via a
@@ -1283,15 +1453,16 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           fr.closed = closed.editorMarks === 0 && closed.previewMarks === 0;
           window.__zm.setView("split");
         } catch (e) { fr.error = String(e); }
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr });
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' } });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' } });
       }
     });
   })();
   """
-  let dropInit = "window.__zmDropPath = " & $(%dropPath) & ";"
+  let dropInit = "window.__zmDropPath = " & $(%dropPath) & ";" &
+                 "window.__zmImgRel = " & $(%imgName) & ";"
   discard w.init(dropInit.cstring)
   discard w.init(driver)
 
@@ -1308,6 +1479,10 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   # If the loop ended without the UI ever reporting, the watchdog fired.
   if not wdDone.load():
     failures.add("timed out waiting for UI report")
+
+  for leftover in [imgPath, newPath]:
+    try: removeFile(leftover)
+    except CatchableError: discard
 
   if failures.len == 0:
     logLine("self-test: PASS")
@@ -1329,6 +1504,8 @@ proc printHelp() =
 Usage: zmarkdown [options] [file]
 
 Open a markdown file by passing its path (this is how the file manager opens it).
+A path that does not exist yet is fine: the editor starts empty under that name
+and the file is written the first time you save.
 
 Options:""")
   when defined(linux):

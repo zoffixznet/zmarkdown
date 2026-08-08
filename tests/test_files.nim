@@ -25,8 +25,24 @@ suite "write":
     check readFile(p) == "content here"
     removeFile(p)
 
+  test "missing parent directories are created":
+    # Launching with a path into a directory that is not there yet has to work:
+    # the document opens under that name and the first save makes room for it.
+    let root = getTempDir() / "zmarkdown-write-test-tree"
+    removeDir(root)
+    let p = root / "notes" / "today" / "plan.md"
+    let r = writeTextFile(p, "# plan")
+    check r.ok
+    check fileExists(p)
+    check readFile(p) == "# plan"
+    removeDir(root)
+
   test "writing to an unwritable path returns a failure, does not raise":
-    # A path whose parent directory does not exist cannot be written.
-    let r = writeTextFile("/this/path/does/not/exist/file.txt", "x")
+    # A regular file where a directory would have to be: nothing can be created
+    # underneath it, so neither the directory nor the write can succeed.
+    let blocker = getTempDir() / "zmarkdown-write-blocker.txt"
+    writeFile(blocker, "x")
+    let r = writeTextFile(blocker / "sub" / "file.txt", "x")
     check not r.ok
     check r.error.len > 0
+    removeFile(blocker)

@@ -2,6 +2,8 @@
 ## into a Result the caller can act on (show a dialog, keep the document), never
 ## an exception that takes down the app.
 
+import std/os
+
 type
   IoOutcome*[T] = object
     ## Success carries a value; failure carries a human-readable message.
@@ -28,9 +30,15 @@ proc readTextFile*(path: string): IoOutcome[string] =
     ioErr[string]("Could not read file: " & e.msg)
 
 proc writeTextFile*(path, content: string): IoOutcome[bool] =
-  ## Write text to a file, replacing any existing contents. On any error returns
-  ## a failure outcome.
+  ## Write text to a file, replacing any existing contents. Missing parent
+  ## directories are created first: a path can legitimately name a directory
+  ## that is not there yet, since `zmarkdown notes/today/plan.md` starts a new
+  ## document under that name and saving it has to make room for it. On any
+  ## error returns a failure outcome.
   try:
+    let dir = path.parentDir()
+    if dir.len > 0 and not dirExists(dir):
+      createDir(dir)
     writeFile(path, content)
     ioOk(true)
   except IOError as e:

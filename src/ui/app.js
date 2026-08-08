@@ -8,6 +8,7 @@
  *
  * Bound by Nim (see src/zmarkdown.nim):
  *   render(src)            -> HTML fragment string
+ *   imageData(token)       -> {uri, error} for one local image in the preview
  *   applyEdit(kind, text, selStart, selEnd) -> {text, selStart, selEnd}
  *   loadInitialState()     -> {width,height,view,splitRatio}  (view/ratio used here)
  *   persistState(view, ratio)   (fire and forget)
@@ -81,6 +82,7 @@
       if (html !== lastRenderedHtml) {
         reading.innerHTML = html;
         lastRenderedHtml = html;
+        hydration = hydrateImages();
         // The rebuild threw away any search marks; put them back.
         if (find.open && find.target === "preview") refreshFind({ keepIndex: true });
       }
@@ -103,6 +105,138 @@
   function escapeHtml(s) {
     return s.replace(/[&<>"]/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  /* ---- Images in the preview ------------------------------------------- */
+  // The page is handed to the webview as a string, so it has no base URL to
+  // resolve `pictures/cat.png` against and could not read the file anyway.
+  // Nim replaces every local image source with a token; this redeems the token
+  // for the bytes. A token encodes the file's size and timestamp, so it only
+  // changes when the picture does: a document that re-renders on every
+  // keystroke fetches each image once, not once per keystroke.
+
+  const imageCache = new Map(); // token -> {promise, bytes}
+  const IMAGE_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+  let imageCacheBytes = 0;
+
+  // Drop the least recently wanted pictures until the cache fits its budget.
+  // Bounding by bytes rather than by count is what keeps a document of many
+  // small images entirely cached (so typing in it re-fetches nothing) while a
+  // handful of huge ones still cannot fill the heap.
+  function evictImages() {
+    while (imageCacheBytes > IMAGE_CACHE_MAX_BYTES && imageCache.size > 1) {
+      const oldest = imageCache.keys().next().value;
+      const entry = imageCache.get(oldest);
+      imageCache.delete(oldest);
+      imageCacheBytes -= entry.bytes;
+    }
+  }
+
+  // Caching the promise rather than its result also collapses duplicates: the
+  // same picture used twice in a document is fetched once.
+  function imageFor(token) {
+    const hit = imageCache.get(token);
+    if (hit) {
+      // Touch it, so eviction takes what nobody has looked at for longest.
+      imageCache.delete(token);
+      imageCache.set(token, hit);
+      return hit.promise;
+    }
+    const entry = { promise: null, bytes: 0 };
+    entry.promise = (async () => {
+      let res;
+      try {
+        const r = await window.imageData(token);
+        res = { uri: (r && r.uri) || "", error: (r && r.error) || "" };
+      } catch (e) {
+        log("imageData failed: " + e);
+        res = { uri: "", error: "Image could not be read" };
+      }
+      // Never remember a failure: whatever went wrong may not be wrong next
+      // time, and the token would otherwise pin the placeholder for the rest
+      // of the session even after the file comes back.
+      if (res.error) {
+        if (imageCache.get(token) === entry) imageCache.delete(token);
+        return res;
+      }
+      if (imageCache.get(token) === entry) {
+        entry.bytes = res.uri.length;
+        imageCacheBytes += entry.bytes;
+        evictImages();
+      }
+      return res;
+    })();
+    imageCache.set(token, entry);
+    return entry.promise;
+  }
+
+  // The placeholder drawing lives in Nim (it is what a missing image already
+  // gets at render time); an empty token asks for it on its own.
+  let placeholderUri = "";
+  async function placeholder() {
+    if (!placeholderUri) placeholderUri = (await imageFor("")).uri;
+    return placeholderUri;
+  }
+
+  // An image the page fetched itself can still fail: no network, a dead URL, a
+  // corrupt file. Give it the same placeholder a missing local file gets rather
+  // than the engine's own broken-image glyph. `error` does not bubble, so this
+  // listens in the capture phase.
+  reading.addEventListener("error", (ev) => {
+    const el = ev.target;
+    if (!el || el.tagName !== "IMG" || el.hasAttribute("data-zm-missing")) return;
+    const src = el.getAttribute("src") || "";
+    // An inlined image carries its whole self in the src; naming it in the
+    // tooltip would be a screenful of base64, so only a real URL is quoted.
+    const shown = src.startsWith("data:") ? ""
+      : (src.length > 80 ? src.slice(0, 77) + "..." : src);
+    el.setAttribute("data-zm-missing",
+      shown ? "Image could not be loaded: " + shown : "Image could not be displayed");
+    if (!el.title) el.title = el.getAttribute("data-zm-missing");
+    placeholder().then((uri) => { if (uri && el.isConnected) el.src = uri; });
+  }, true);
+
+  function applyImage(el, res) {
+    if (res.error) {
+      el.setAttribute("data-zm-missing", res.error);
+      el.removeAttribute("data-zm-img");
+    }
+    if (res.uri) el.src = res.uri;
+    else if (res.error) {
+      // Nothing came back at all (the bridge call itself failed): still show
+      // the placeholder rather than an empty frame.
+      placeholder().then((uri) => {
+        if (uri && el.isConnected && !el.getAttribute("src")) el.src = uri;
+      });
+    }
+    // Hovering a placeholder should say why it is one, unless the document
+    // gave the image a title of its own.
+    if (!el.title && el.hasAttribute("data-zm-missing")) {
+      el.title = el.getAttribute("data-zm-missing");
+    }
+  }
+
+  // The hydration of the latest render. A render does not wait on it - the text
+  // must appear (and the caret land) without waiting on a 9 MB photo - but the
+  // self-test does, so it can assert on finished images.
+  let hydration = Promise.resolve();
+
+  // Give every image in the freshly rendered preview its source. Resolves once
+  // they all have one (or an explanation instead).
+  function hydrateImages() {
+    const pending = [];
+    for (const el of reading.querySelectorAll("img[data-zm-img], img[data-zm-missing]")) {
+      const token = el.getAttribute("data-zm-img");
+      if (!token) {
+        applyImage(el, { uri: "", error: el.getAttribute("data-zm-missing") || "" });
+        continue;
+      }
+      pending.push(imageFor(token).then((res) => {
+        // The preview may have been rebuilt while the bytes were in flight.
+        if (el.isConnected) applyImage(el, res);
+      }));
+    }
+    return pending.length ? Promise.all(pending) : Promise.resolve();
   }
 
   // Open links in the rendered preview in the system browser rather than letting
@@ -819,10 +953,12 @@
         if (res && res.opened) await loadIntoEditor(res.text, res.title);
       } else if (action === "save") {
         const res = await window.menuSave(editor.value);
-        if (res && res.saved) setTitle(res.title, false);
+        if (res && res.saved) { setTitle(res.title, false); await doRender(); }
       } else if (action === "save-as") {
         const res = await window.menuSaveAs(editor.value);
-        if (res && res.saved) setTitle(res.title, false);
+        // Saving can move the document to another folder, and relative image
+        // paths are read from wherever it now lives: render again so they are.
+        if (res && res.saved) { setTitle(res.title, false); await doRender(); }
       } else if (action === "settings") {
         openSettings();
       } else if (action === "exit") {
@@ -1160,12 +1296,14 @@
     setView(currentView, false);
     syncHighlightMetrics();
     await doRender();
-    // Open a file passed on the command line (e.g. opened from the file manager).
+    // A file passed on the command line (e.g. opened from the file manager).
+    // Nim has already read it; a path that does not exist yet comes back empty
+    // and is written on the first save, so the editor just shows it either way.
     try {
       const sf = await window.startupFile();
       if (sf && sf.path) {
-        const res = await window.openPath(false, "", sf.path);
-        if (res && res.opened) await loadIntoEditor(res.text, res.title);
+        await loadIntoEditor(sf.text || "", sf.title || "");
+        if (sf.created) log("new file " + sf.path);
       }
     } catch (e) { log("startup file open failed: " + e); }
     await resetHistory(editor.value);
@@ -1184,7 +1322,28 @@
       return true;
     },
     getPreviewHtml: function () { return reading.innerHTML; },
+    // The fragment Nim returned, before the images in it were given their
+    // sources: this is what the self-test asserts the rewriting on.
+    getRenderedHtml: function () { return lastRenderedHtml; },
     getEditorValue: function () { return editor.value; },
+    getTitle: function () { return baseTitle; },
+    // Every image in the preview, once each has either loaded or given up, so
+    // the self-test can assert on what a reader would actually see.
+    imagesLoaded: async function () {
+      await hydration; // every image has a source before any of this waits on one
+      const els = Array.from(reading.querySelectorAll("img"));
+      await Promise.all(els.map((el) => el.complete ? Promise.resolve() : new Promise((done) => {
+        el.addEventListener("load", done, { once: true });
+        el.addEventListener("error", done, { once: true });
+        setTimeout(done, 1500); // a source that never answers must not hang the test
+      })));
+      return els.map((el) => ({
+        ok: el.naturalWidth > 0,
+        src: (el.getAttribute("src") || "").slice(0, 40),
+        missing: el.getAttribute("data-zm-missing") || "",
+        alt: el.getAttribute("alt") || "",
+      }));
+    },
     setView: function (v) { setView(v, false); return app.getAttribute("data-view"); },
     getView: function () { return app.getAttribute("data-view"); },
     runEdit: async function (kind, text, s, e) {
