@@ -1,6 +1,6 @@
 # Package
 
-version       = "1.2.0"
+version       = "1.2.1"
 author        = "Zoffix Znet"
 description    = "A small, fast desktop markdown editor and viewer"
 license        = "MIT"

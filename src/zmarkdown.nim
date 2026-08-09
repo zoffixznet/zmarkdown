@@ -11,7 +11,7 @@ import std/osproc
 import std/streams
 import std/strtabs
 
-const AppVersion = "1.2.0"
+const AppVersion = "1.2.1"
 
 import webview
 
