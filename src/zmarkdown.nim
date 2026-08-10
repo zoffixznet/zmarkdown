@@ -11,7 +11,7 @@ import std/osproc
 import std/streams
 import std/strtabs
 
-const AppVersion = "1.2.1"
+const AppVersion = "1.3.0"
 
 import webview
 
@@ -503,6 +503,8 @@ type
   App = object
     w: Webview
     currentPath: string    ## path of the open file, "" if none
+    diskStamp: FileStamp   ## how that file looked when we last read or wrote it,
+                           ## so a change made behind our back can be noticed
     ui: UiState            ## restored/persisted UI state
     startupFile: string    ## file to open on launch (from the command line), "" if none
     exiting: bool
@@ -528,6 +530,18 @@ proc watchdogProc() {.thread.} =
 
 proc docName(): string =
   if app.currentPath.len > 0: extractFilename(app.currentPath) else: "Untitled"
+
+proc setCurrentFile(path: string) =
+  ## Point the app at a file (or, with "", at nothing) and record how that file
+  ## looks right now. Every later comparison against disk is against this stamp,
+  ## so it has to be taken everywhere the open document changes.
+  app.currentPath = path
+  app.diskStamp = fileStamp(path)
+
+proc diskMovedOn(): bool =
+  ## Has the open file been changed by something other than us since we last
+  ## read or wrote it?
+  app.currentPath.len > 0 and changed(app.diskStamp, fileStamp(app.currentPath))
 
 # ---- JSON helpers for the bridge -------------------------------------------
 
@@ -712,7 +726,7 @@ proc jsStartupFile(id: string; req: JsonNode): string =
     errorDialog("Open failed", "That path is a directory, not a file:\n" & path)
     return $ %*{"path": ""}
   if not fileExists(path):
-    app.currentPath = path
+    setCurrentFile(path)
     logLine("new file " & path & " (written on the first save)")
     return $ %*{"path": path, "text": "", "title": docName(), "created": true}
   let r = readTextFile(path)
@@ -720,7 +734,7 @@ proc jsStartupFile(id: string; req: JsonNode): string =
     logLine("open failed (" & path & "): " & r.error)
     errorDialog("Open failed", r.error)
     return $ %*{"path": ""}
-  app.currentPath = path
+  setCurrentFile(path)
   logLine("opened " & path)
   $ %*{"path": path, "text": r.value, "title": docName(), "created": false}
 
@@ -812,7 +826,7 @@ proc doOpen(text: string): tuple[opened: bool, content, title: string] =
     logLine("open failed: " & r.error)
     errorDialog("Open failed", r.error)
     return (false, "", "")
-  app.currentPath = path
+  setCurrentFile(path)
   logLine("opened " & path)
   (true, r.value, docName())
 
@@ -828,9 +842,15 @@ proc doSaveTo(path, text: string): bool =
     return false
   if dirIsNew:
     logLine("created directory " & dir)
-  app.currentPath = path
+  setCurrentFile(path)
   logLine("saved " & path)
   true
+
+proc doSaveAs(text: string): tuple[saved: bool, title: string] =
+  let suggested = if app.currentPath.len > 0: extractFilename(app.currentPath) else: "untitled.md"
+  let path = saveFileDialog("Save As", suggested)
+  if path.len == 0: return (false, docName())
+  (doSaveTo(path, text), docName())
 
 proc doSave(text: string): tuple[saved: bool, title: string] =
   ## Save to the current path, or fall through to Save As if there is none.
@@ -838,13 +858,21 @@ proc doSave(text: string): tuple[saved: bool, title: string] =
     let path = saveFileDialog("Save As", "untitled.md")
     if path.len == 0: return (false, docName())
     return (doSaveTo(path, text), docName())
+  # Somebody else may have written to this file since we last read or wrote it.
+  # Overwriting it without a word would throw their work away silently, so ask.
+  if diskMovedOn():
+    let gone = not fileStamp(app.currentPath).exists
+    logLine("save: " & app.currentPath &
+      (if gone: " is no longer on disk" else: " changed on disk since it was opened"))
+    case diskConflictPrompt(docName(), gone)
+    of ccOverwrite:
+      logLine("save: overwriting the changed file at the user's request")
+    of ccSaveAs:
+      return doSaveAs(text)
+    of ccCancel:
+      logLine("save cancelled")
+      return (false, docName())
   (doSaveTo(app.currentPath, text), docName())
-
-proc doSaveAs(text: string): tuple[saved: bool, title: string] =
-  let suggested = if app.currentPath.len > 0: extractFilename(app.currentPath) else: "untitled.md"
-  let path = saveFileDialog("Save As", suggested)
-  if path.len == 0: return (false, docName())
-  (doSaveTo(path, text), docName())
 
 proc guardUnsaved(dirty: bool, text: string): bool =
   ## When there are unsaved changes, prompt Save / Don't Save / Cancel. Returns
@@ -876,7 +904,7 @@ proc jsMenuNew(id: string; req: JsonNode): string =
   let text = if req.len > 1: req[1].getStr() else: ""
   if not guardUnsaved(dirty, text):
     return $ %*{"ok": false}
-  app.currentPath = ""
+  setCurrentFile("")
   logLine("new document")
   $ %*{"ok": true, "title": docName()}
 
@@ -895,7 +923,7 @@ proc jsOpenPath(id: string; req: JsonNode): string =
     logLine("open failed (" & path & "): " & r.error)
     errorDialog("Open failed", r.error)
     return $ %*{"opened": false}
-  app.currentPath = path
+  setCurrentFile(path)
   logLine("opened " & path)
   $ %*{"opened": true, "text": r.value, "title": docName()}
 
@@ -909,7 +937,7 @@ proc jsLoadDropped(id: string; req: JsonNode): string =
   let name = if req.len > 2 and req[2].kind == JString: req[2].getStr() else: ""
   if not guardUnsaved(dirty, curText):
     return $ %*{"ok": false}
-  app.currentPath = ""
+  setCurrentFile("")
   logLine("loaded dropped content" & (if name.len > 0: " (" & name & ")" else: ""))
   $ %*{"ok": true, "title": (if name.len > 0: name else: "Untitled")}
 
@@ -924,6 +952,38 @@ proc jsOpenExternal(id: string; req: JsonNode): string =
   except CatchableError as e:
     vlog("openExternal failed: " & e.msg)
   result = "true"
+
+proc jsReloadFile(id: string; req: JsonNode): string =
+  ## reloadFile(dirty) -> {ok, text, title}. F5: read the open file from disk
+  ## again, so a document edited elsewhere can be picked up without reopening
+  ## it. Unsaved changes are discarded only after asking.
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  if app.currentPath.len == 0:
+    infoDialog("Nothing to reload",
+      "This document has never been saved, so there is no file on disk to " &
+      "reload it from.")
+    return $ %*{"ok": false}
+  if not fileExists(app.currentPath):
+    let hadFile = app.diskStamp.exists
+    logLine("reload: " & app.currentPath & " is not on disk")
+    infoDialog("Nothing to reload",
+      (if hadFile: "This file is no longer on disk:\n"
+       else: "This document has not been written to disk yet:\n") &
+      app.currentPath)
+    return $ %*{"ok": false}
+  if dirty and not confirmPrompt("Reload from disk",
+      "This document has unsaved changes, and reloading will throw them away.\n\n" &
+      "Reload " & docName() & " from disk?"):
+    logLine("reload cancelled (unsaved changes kept)")
+    return $ %*{"ok": false}
+  let r = readTextFile(app.currentPath)
+  if not r.ok:
+    logLine("reload failed (" & app.currentPath & "): " & r.error)
+    errorDialog("Reload failed", r.error)
+    return $ %*{"ok": false}
+  app.diskStamp = fileStamp(app.currentPath)
+  logLine("reloaded " & app.currentPath)
+  $ %*{"ok": true, "text": r.value, "title": docName()}
 
 proc jsMenuSave(id: string; req: JsonNode): string =
   let text = if req.len > 0: req[0].getStr() else: ""
@@ -1041,6 +1101,7 @@ proc bindAll(w: Webview) =
   discard w.bind("openPath", jsOpenPath)
   discard w.bind("loadDropped", jsLoadDropped)
   discard w.bind("openExternal", jsOpenExternal)
+  discard w.bind("reloadFile", jsReloadFile)
   discard w.bind("menuSave", jsMenuSave)
   discard w.bind("menuSaveAs", jsMenuSaveAs)
   discard w.bind("requestExit", jsRequestExit)
@@ -1132,6 +1193,36 @@ proc setupWindow(debug: bool): Webview =
 
   w
 
+# ---- Scripted dialog answers (self-test only) -------------------------------
+#
+# The headless self-test has nobody to click a dialog's buttons, and the flows
+# behind them - reloading over unsaved changes, saving onto a file that changed
+# underneath - are worth testing through rather than around. These are plain
+# integers in fixed arrays so the hook the dialogs call can stay gcsafe;
+# nothing but runSelfTest ever fills them in.
+
+const MaxScriptedAnswers = 16
+
+var
+  scriptedReplies: array[MaxScriptedAnswers, cint]  ## answers, in the order asked
+  scriptedAsked: array[MaxScriptedAnswers, cint]    ## which prompt each answered
+  scriptedCount = 0
+  scriptedUsed = 0
+
+proc scriptedDialogAnswer(kind: string): int {.gcsafe.} =
+  ## Hand back the next scripted answer, recording which prompt asked for it so
+  ## the test can assert that the expected questions were the ones put.
+  if scriptedUsed >= scriptedCount:
+    return -1  # nothing scripted: a real run would ask a person
+  scriptedAsked[scriptedUsed] =
+    case kind
+    of "unsaved": 1.cint
+    of "confirm": 2.cint
+    of "conflict": 3.cint
+    else: 0.cint
+  result = scriptedReplies[scriptedUsed].int
+  scriptedUsed += 1
+
 # ---- Self-test -------------------------------------------------------------
 
 proc runSelfTest(forceCpu, forceGpu: bool): int =
@@ -1171,9 +1262,36 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   except CatchableError: discard
   app.startupFile = newPath
 
+  # Answers for the prompts the driver is about to provoke, in the order it
+  # provokes them: refuse the first reload over unsaved changes, allow the
+  # second, cancel the first save onto a file that changed underneath, and
+  # overwrite on the second.
+  scriptedReplies[0] = 0  # confirm: no, keep my unsaved changes
+  scriptedReplies[1] = 1  # confirm: yes, reload from disk
+  scriptedReplies[2] = 0  # conflict: cancel the save
+  scriptedReplies[3] = 1  # conflict: overwrite
+  scriptedCount = 4
+  scriptedUsed = 0
+  setDialogAnswerHook(scriptedDialogAnswer)
+
   let w = setupWindow(debug = false)
 
   var failures: seq[string]
+
+  proc jsSelfTestDisk(id: string; req: JsonNode): string =
+    ## selfTestDisk(text) -> {content}. Self-test only: write the open file
+    ## behind the app's back the way another program would (when `text` is not
+    ## empty), and report what is on disk now either way.
+    try:
+      if req.len > 0 and req[0].kind == JString and req[0].getStr().len > 0:
+        writeFile(newPath, req[0].getStr())
+    except CatchableError as e:
+      vlog("selfTestDisk write failed: " & e.msg)
+    var content = ""
+    try: content = readFile(newPath)
+    except CatchableError: discard
+    $ %*{"content": content}
+  discard w.bind("selfTestDisk", jsSelfTestDisk)
 
   # A binding JS calls once the UI is ready, handing the test results back to Nim.
   proc jsReport(id: string; req: JsonNode): string =
@@ -1265,12 +1383,37 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           failures.add("saving the new document reported failure")
         if not fileExists(newPath):
           failures.add("the first save did not create " & newPath)
-        else:
-          var content = ""
-          try: content = readFile(newPath)
-          except CatchableError: discard
-          if content != "# Created on save\n":
-            failures.add("the created file holds '" & content & "'")
+        if st{"written"}.getStr() != "# Created on save\n":
+          failures.add("the created file held '" & st{"written"}.getStr() & "'")
+      # Reloading from disk, and saving onto a file changed underneath us.
+      let disk = r{"disk"}
+      if disk == nil or disk.kind != JObject or disk{"error"}.getStr().len > 0:
+        failures.add("disk self-test did not report" &
+          (if disk != nil and disk{"error"}.getStr().len > 0:
+             ": " & disk{"error"}.getStr() else: ""))
+      else:
+        if disk{"keptEdit"}.getStr() != "# My unsaved edit\n":
+          failures.add("F5 threw away unsaved changes after the prompt was declined (editor holds '" &
+            disk{"keptEdit"}.getStr() & "')")
+        if disk{"reloaded"}.getStr() != "# Changed on disk by someone else\n":
+          failures.add("F5 did not reload the file from disk (editor holds '" &
+            disk{"reloaded"}.getStr() & "')")
+        if not disk{"saveStopped"}.getBool():
+          failures.add("saving onto a file changed on disk was not stopped")
+        if disk{"afterCancel"}.getStr() != "# Changed yet again, by someone else\n":
+          failures.add("a cancelled save wrote the file anyway (it holds '" &
+            disk{"afterCancel"}.getStr() & "')")
+        if not disk{"saveOverwrote"}.getBool():
+          failures.add("overwriting the changed file was refused")
+        if disk{"afterOverwrite"}.getStr() != "# Mine\n":
+          failures.add("the overwrite did not write our text (file holds '" &
+            disk{"afterOverwrite"}.getStr() & "')")
+      # ...and the questions asked were the ones expected, in that order.
+      if scriptedUsed != 4:
+        failures.add("expected 4 prompts, " & $scriptedUsed & " were asked")
+      elif scriptedAsked[0] != 2 or scriptedAsked[1] != 2 or
+           scriptedAsked[2] != 3 or scriptedAsked[3] != 3:
+        failures.add("the prompts asked were not reload, reload, conflict, conflict")
       # Find and replace, driven through the real bar.
       let f = r{"find"}
       if f == nil or f.kind != JObject:
@@ -1361,7 +1504,37 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
         try {
           var sv = await window.menuSave("# Created on save\n");
           startup.saved = !!(sv && sv.saved);
+          // Read it back now: a later step deliberately rewrites this file.
+          startup.written = (await window.selfTestDisk("")).content;
         } catch (e) { startup.error = String(e); }
+        // Reloading from disk (F5) and saving onto a file somebody else has
+        // changed. Both prompts are answered from the script in Nim: no, then
+        // yes for the reload; cancel, then overwrite for the save.
+        var disk = {};
+        var edEl0 = document.getElementById("editor");
+        try {
+          await window.selfTestDisk("# Changed on disk by someone else\n");
+          edEl0.value = "# My unsaved edit\n";
+          edEl0.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(function (r) { setTimeout(r, 250); });
+          function pressF5() {
+            document.dispatchEvent(new KeyboardEvent("keydown",
+              { key: "F5", bubbles: true, cancelable: true }));
+            return new Promise(function (r) { setTimeout(r, 450); });
+          }
+          await pressF5();                       // prompt answered "no"
+          disk.keptEdit = window.__zm.getEditorValue();
+          await pressF5();                       // prompt answered "yes"
+          disk.reloaded = window.__zm.getEditorValue();
+          // The file changes again, and now we try to save over it.
+          await window.selfTestDisk("# Changed yet again, by someone else\n");
+          var s1 = await window.menuSave("# Mine\n");
+          disk.saveStopped = !(s1 && s1.saved);
+          disk.afterCancel = (await window.selfTestDisk("")).content;
+          var s2 = await window.menuSave("# Mine\n");
+          disk.saveOverwrote = !!(s2 && s2.saved);
+          disk.afterOverwrite = (await window.selfTestDisk("")).content;
+        } catch (e) { disk.error = String(e); }
         var op = await window.openPath(false, "", window.__zmDropPath);
         var dropText = (op && op.opened) ? op.text : "";
         // Exercise the real drop handler two ways: a uri-list drop (opens via a
@@ -1453,10 +1626,10 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           fr.closed = closed.editorMarks === 0 && closed.previewMarks === 0;
           window.__zm.setView("split");
         } catch (e) { fr.error = String(e); }
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup });
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup, disk: disk });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' } });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' }, disk: { error: 'driver aborted' } });
       }
     });
   })();

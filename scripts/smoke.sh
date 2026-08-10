@@ -12,9 +12,14 @@ if [[ ! -x "$bin" ]]; then
   exit 1
 fi
 
+# The self-test boots the real app, window and all. Run it on a virtual display
+# whenever one can be started - including, deliberately, when a desktop session
+# is already there: a test run must never throw a window onto the screen of
+# whoever is running it. Set ZMARKDOWN_SMOKE_ON_DISPLAY=1 to watch it live on
+# your own display instead.
 run() {
-  if [[ "$(uname -s)" == "Linux" ]] && command -v xvfb-run >/dev/null 2>&1 && [[ -z "${DISPLAY:-}" ]]; then
-    # No display: use a virtual X server.
+  if [[ "$(uname -s)" == "Linux" ]] && command -v xvfb-run >/dev/null 2>&1 &&
+     [[ "${ZMARKDOWN_SMOKE_ON_DISPLAY:-0}" != "1" ]]; then
     xvfb-run -a "$bin" --self-test
   else
     "$bin" --self-test

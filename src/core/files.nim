@@ -2,9 +2,16 @@
 ## into a Result the caller can act on (show a dialog, keep the document), never
 ## an exception that takes down the app.
 
-import std/os
+import std/[os, times]
 
 type
+  FileStamp* = object
+    ## What a file looked like the last time the app read or wrote it, so that a
+    ## change made by something else can be noticed before it is overwritten.
+    exists*: bool
+    size*: int64
+    mtime*: Time
+
   IoOutcome*[T] = object
     ## Success carries a value; failure carries a human-readable message.
     ok*: bool
@@ -47,3 +54,26 @@ proc writeTextFile*(path, content: string): IoOutcome[bool] =
     ioErr[bool]("Could not save file: " & e.msg)
   except CatchableError as e:
     ioErr[bool]("Could not save file: " & e.msg)
+
+proc fileStamp*(path: string): FileStamp =
+  ## Stamp a file as it is right now. A path that is not there, cannot be
+  ## stat'ed, or is not an ordinary file stamps as "does not exist" - itself a
+  ## state worth comparing against, since a file appearing where there was none
+  ## is as much a surprise as one changing.
+  if path.len == 0:
+    return FileStamp()
+  try:
+    let info = getFileInfo(path)
+    if info.kind notin {pcFile, pcLinkToFile}:
+      return FileStamp()
+    FileStamp(exists: true, size: info.size, mtime: info.lastWriteTime)
+  except CatchableError:
+    FileStamp()
+
+func changed*(before, now: FileStamp): bool =
+  ## Whether the file moved on underneath us between two stamps. Two stamps of a
+  ## file that was never there compare equal, so a document that has not been
+  ## written yet is never reported as changed.
+  if before.exists != now.exists:
+    return true
+  before.exists and (before.size != now.size or before.mtime != now.mtime)

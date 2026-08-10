@@ -1,5 +1,5 @@
 import std/unittest
-import std/os
+import std/[os, times]
 import "../src/core/files"
 
 suite "read":
@@ -46,3 +46,52 @@ suite "write":
     check not r.ok
     check r.error.len > 0
     removeFile(blocker)
+
+suite "noticing a file that changed underneath us":
+  let p = getTempDir() / "zmarkdown-stamp-test.md"
+
+  test "a file that has not moved stamps the same":
+    writeFile(p, "one")
+    let before = fileStamp(p)
+    check before.exists
+    check not changed(before, fileStamp(p))
+    removeFile(p)
+
+  test "different contents are a change":
+    writeFile(p, "one")
+    let before = fileStamp(p)
+    writeFile(p, "something else entirely")
+    check changed(before, fileStamp(p))
+    removeFile(p)
+
+  test "the same length written later is still a change":
+    # Size alone would miss an edit that happens to be the same length; the
+    # modification time is what catches it.
+    writeFile(p, "one")
+    let before = fileStamp(p)
+    setLastModificationTime(p, getTime() + 5.seconds)
+    check changed(before, fileStamp(p))
+    removeFile(p)
+
+  test "a file that disappeared is a change":
+    writeFile(p, "one")
+    let before = fileStamp(p)
+    removeFile(p)
+    check changed(before, fileStamp(p))
+
+  test "a file that appeared where there was none is a change":
+    if fileExists(p): removeFile(p)
+    let before = fileStamp(p)
+    check not before.exists
+    writeFile(p, "someone else made this")
+    check changed(before, fileStamp(p))
+    removeFile(p)
+
+  test "a document that was never written is never reported as changed":
+    let never = getTempDir() / "zmarkdown-stamp-never.md"
+    if fileExists(never): removeFile(never)
+    check not changed(fileStamp(never), fileStamp(never))
+    check not changed(fileStamp(""), fileStamp(""))
+
+  test "a directory does not count as the file":
+    check not fileStamp(getTempDir()).exists

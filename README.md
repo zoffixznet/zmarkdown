@@ -60,6 +60,8 @@ Everything goes through the `Makefile`. Run `make` on its own to see every targe
 make deps    # install the toolchain and libraries (uses sudo for system packages on Linux)
 make run     # build and launch the app
 make test    # run the unit tests and the headless end-to-end smoke test
+             # (the smoke test boots the real app on a virtual display, so it
+             #  never opens a window on your desktop)
 make build   # just build the release binary into build/
 make install # install into ~/.local: binary on your PATH, plus menu entry and icons (Linux)
 make dist    # build and package the Linux tarball
@@ -156,10 +158,20 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
 - **Undo / redo** with the toolbar buttons or **Ctrl+Z** and **Ctrl+Y** (**Ctrl+Shift+Z**
   also redoes). History is bounded by memory (about 100 MB), not by a step count: only when
   that is exceeded are the oldest edits dropped.
-- **Files.** **Ctrl+N** new, **Ctrl+O** open, **Ctrl+S** save, **Ctrl+Shift+S** save as. The
-  File menu has the same actions plus Settings and Exit. If you have unsaved changes when
-  starting a new document, opening a file, or exiting, a prompt lets you save, discard, or
-  cancel.
+- **Files.** **Ctrl+N** new, **Ctrl+O** open, **Ctrl+S** save, **Ctrl+Shift+S** save as,
+  **F5** reload from disk. The File menu has the same actions plus Settings and Exit. If you
+  have unsaved changes when starting a new document, opening a file, or exiting, a prompt
+  lets you save, discard, or cancel.
+- **Reload from disk (F5).** Re-reads the open file, so a document that changed underneath
+  you — a branch checkout, another editor, a script that wrote it — can be picked up without
+  reopening it. Your place in the text is kept rather than jumping back to the top. If the
+  document has unsaved changes, F5 asks before throwing them away. **Ctrl+R** does the same
+  thing (and is caught for that reason: left alone it would reload the app's own page).
+- **When a file changes underneath you.** Saving never quietly overwrites a file that
+  something else has written since you opened it. If that has happened, ZMarkdown says so
+  and offers three ways out: overwrite it with your version, save yours to a different file,
+  or do nothing. A file that has been deleted or moved out from under the document is
+  reported the same way.
 - **Images.** `![alt text](picture.png)` shows the picture in the rendered pane. A relative
   path is resolved against the folder the document itself is in (the working directory for a
   document that has never been saved), so a file and the pictures beside it can be moved

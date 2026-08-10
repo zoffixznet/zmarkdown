@@ -951,6 +951,14 @@
       } else if (action === "open") {
         const res = await window.menuOpen(dirty, editor.value);
         if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      } else if (action === "reload") {
+        // Nim asks about unsaved changes and reports what is on disk now.
+        // Keeping the caret and the scroll makes this a refresh rather than a
+        // reopen: you carry on reading where you were.
+        const res = await window.reloadFile(dirty);
+        if (res && res.ok) {
+          await loadIntoEditor(res.text, res.title, { keepPosition: true });
+        }
       } else if (action === "save") {
         const res = await window.menuSave(editor.value);
         if (res && res.saved) { setTitle(res.title, false); await doRender(); }
@@ -990,12 +998,19 @@
     return m ? m[1] : "";
   }
 
-  async function loadIntoEditor(text, title) {
+  async function loadIntoEditor(text, title, opts) {
+    // A reload of the same document keeps you where you were; opening a
+    // different one starts at the top of it.
+    const keep = !!(opts && opts.keepPosition);
+    const caret = keep ? Math.min(editor.selectionStart, text.length) : 0;
+    const editorScroll = keep ? editor.scrollTop : 0;
+    const previewScroll = keep ? preview.scrollTop : 0;
     editor.value = text;
-    editor.selectionStart = editor.selectionEnd = 0; // caret at the start, not the end
-    editor.scrollTop = 0;                             // show the top of the file
+    editor.selectionStart = editor.selectionEnd = caret;
+    editor.scrollTop = editorScroll;
     setTitle(title, false);
     await doRender();
+    if (keep) preview.scrollTop = previewScroll;
     await resetHistory(editor.value);
     editor.focus();
     findTextReplaced();
@@ -1121,6 +1136,10 @@
   // One handler for every accelerator, wherever focus happens to be. The
   // formatting shortcuts only make sense in the editor; the rest are global.
   document.addEventListener("keydown", (ev) => {
+    // F5 re-reads the file from disk. It has to be swallowed either way: left
+    // to the engine it would reload the page itself and take the document with
+    // it.
+    if (ev.key === "F5") { ev.preventDefault(); doFileAction("reload"); return; }
     const mod = ev.ctrlKey || ev.metaKey;
     if (!mod) return;
     const k = (ev.key || "").toLowerCase();
@@ -1144,6 +1163,9 @@
       if (k === "z") { ev.preventDefault(); doUndo(); return; }
       if (k === "y") { ev.preventDefault(); doRedo(); return; }
     }
+    // Ctrl+R is the page-reload accelerator; give it the same meaning F5 has
+    // here rather than letting it throw the document away.
+    if (k === "r") { ev.preventDefault(); doFileAction("reload"); return; }
     if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
