@@ -14,8 +14,12 @@
  *   persistState(view, ratio)   (fire and forget)
  *   menuOpen(dirty, text)  -> {action, ...} for open flow
  *   menuSave(text) / menuSaveAs(text) -> {saved, title}
+ *   openLink(dirty, text, href) -> {kind, text, title, canBack, canForward}
+ *   navState() / navBack(dirty, text) / navForward(dirty, text)
+ *   recentState() / recentRemove(path) / recentClear() / recentSetEnabled(on)
+ *   newWindow()            -> {ok}   (a second instance of the app)
+ *   setWindowTitle(name)   (the native window/taskbar title)
  *   requestExit(dirty, text) -> {exit: bool}
- *   markModified()
  *   logMsg(s)
  */
 
@@ -34,6 +38,14 @@
   const fileMenu = $("file-menu");
   const btnFile = $("btn-file");
   const docTitle = $("doc-title");
+  const btnNavBack = $("nav-back");
+  const btnNavFwd = $("nav-fwd");
+  const emptyHint = $("empty-hint");
+  const recentSep = $("recent-sep");
+  const recentSection = $("recent-section");
+  const recentItems = $("recent-items");
+  const recentMoreWrap = $("recent-more-wrap");
+  const recentMoreMenu = $("recent-more-menu");
   const btnUndo = $("btn-undo");
   const btnRedo = $("btn-redo");
   const findBar = $("findbar");
@@ -95,6 +107,10 @@
   }
 
   function scheduleRender() {
+    // Every path that changes the document ends up here (typing, undo, replace,
+    // a formatting shortcut), which makes this the one place the "this file is
+    // empty" watermark has to be reconsidered from.
+    updateEmptyHint();
     if (renderTimer) clearTimeout(renderTimer);
     // Nobody is looking at the preview in Text view: skip the whole render
     // pipeline (markdown -> bridge -> DOM) and catch up on the view switch.
@@ -239,35 +255,135 @@
     return pending.length ? Promise.all(pending) : Promise.resolve();
   }
 
-  // Open links in the rendered preview in the system browser rather than letting
-  // them navigate the app's own webview away. #reading persists across renders,
-  // so one delegated handler covers every rendered link.
+  /* ---- Following links in the preview ---------------------------------- */
+  // A link must never be left to the engine: the page IS the application, so
+  // letting it navigate would replace the whole UI with whatever was linked and
+  // there would be no way back. Every click on a link is therefore swallowed
+  // here and handed to Nim, which sends web addresses to the browser, pictures
+  // and PDFs to the desktop, and markdown straight into the editor. #reading
+  // survives every render, so one delegated handler covers every rendered link.
+
+  // Raw HTML in a document is deliberately passed through unsanitized, so a
+  // document can also carry a <form>. Submitting one would navigate the app
+  // away exactly as a link would; stop that too. (An <iframe> in a document
+  // still loads on its own - it does not take the window with it.)
+  document.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    log("a form in the document was not submitted");
+  }, true);
+
+  // A link to a heading inside this same document: scroll to it rather than
+  // going anywhere. Nim gives every heading an id built from its text.
+  function gotoAnchor(fragment) {
+    let id = fragment;
+    try { id = decodeURIComponent(fragment); } catch (e) {}
+    if (!id) { preview.scrollTop = 0; return true; }
+    let target = null;
+    // getElementById would search the whole page; the anchor must be in the
+    // rendered document, and an id there may be any text at all.
+    for (const el of reading.querySelectorAll("[id], a[name]")) {
+      if (el.id === id || el.getAttribute("name") === id) { target = el; break; }
+    }
+    if (!target) return false;
+    target.scrollIntoView({ block: "start", inline: "nearest" });
+    return true;
+  }
+
+  async function followLink(href) {
+    try {
+      const res = await window.openLink(dirty, editor.value, href);
+      if (res && res.kind === "opened") {
+        await loadIntoEditor(res.text, res.title);
+      }
+      if (res) applyNavState(res);
+    } catch (e) { log("openLink failed: " + e); }
+  }
+
   reading.addEventListener("click", (ev) => {
     const a = ev.target.closest("a[href]");
     if (!a) return;
-    const href = a.getAttribute("href") || "";
-    if (/^https?:/i.test(href)) {
-      ev.preventDefault();
-      try { if (window.openExternal) window.openExternal(href); } catch (e) {}
+    ev.preventDefault();
+    const href = (a.getAttribute("href") || "").trim();
+    if (!href) return;
+    if (href.charAt(0) === "#") {
+      if (!gotoAnchor(href.slice(1))) log("no heading matches " + href);
+      return;
     }
+    followLink(href);
   });
 
   /* ---- Dirty / title --------------------------------------------------- */
 
   let baseTitle = "Untitled";
 
+  function paintTitle() {
+    docTitle.innerHTML =
+      (dirty ? '<span class="dirty">&#9679;</span> ' : "") + escapeHtml(baseTitle);
+    docTitle.title = baseTitle;
+  }
+
   function setTitle(name, isDirty) {
     baseTitle = name || "Untitled";
     dirty = !!isDirty;
-    docTitle.innerHTML =
-      (dirty ? '<span class="dirty">&#9679;</span> ' : "") + escapeHtml(baseTitle);
+    paintTitle();
+    // The window title carries the file name too, so a taskbar of ZMarkdown
+    // windows says which document each one holds.
+    try { if (window.setWindowTitle) window.setWindowTitle(baseTitle); } catch (e) {}
+    updateEmptyHint();
   }
 
   function markDirty() {
     if (!dirty) {
       dirty = true;
-      docTitle.innerHTML = '<span class="dirty">&#9679;</span> ' + escapeHtml(baseTitle);
+      paintTitle();
     }
+  }
+
+  /* ---- Session document history (the back and forward arrows) ---------- */
+
+  // Nim answers a cancelled or failed open with just {opened:false} and no
+  // history in it, which must leave the arrows exactly as they were.
+  function applyNavState(state) {
+    if (!state || typeof state.canBack !== "boolean") return;
+    if (btnNavBack) btnNavBack.disabled = !state.canBack;
+    if (btnNavFwd) btnNavFwd.disabled = !state.canForward;
+  }
+
+  async function refreshNavState() {
+    try { applyNavState(await window.navState()); } catch (e) {}
+  }
+
+  async function navigate(forward) {
+    const btn = forward ? btnNavFwd : btnNavBack;
+    if (btn && btn.disabled) return;
+    try {
+      const res = await (forward ? window.navForward(dirty, editor.value)
+                                 : window.navBack(dirty, editor.value));
+      if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      applyNavState(res && res.opened ? res : await window.navState());
+    } catch (e) { log("history navigation failed: " + e); }
+  }
+
+  if (btnNavBack) btnNavBack.addEventListener("click", () => navigate(false));
+  if (btnNavFwd) btnNavFwd.addEventListener("click", () => navigate(true));
+
+  /* ---- "This file is empty" watermark ---------------------------------- */
+  // Only in Preview-only view: in Split the editor is right there, so a blank
+  // pane says nothing surprising and the advice would be wrong.
+
+  function updateEmptyHint() {
+    if (!emptyHint) return;
+    // Testing for a non-space character stops at the first one, where trim()
+    // would copy the whole document - and this runs on every keystroke.
+    const blank = !/\S/.test(editor.value);
+    emptyHint.hidden = !(currentView === "preview" && blank);
+  }
+
+  if (emptyHint) {
+    emptyHint.addEventListener("click", () => {
+      setView("text");
+      editor.focus();
+    });
   }
 
   /* ---- Editing shortcuts ----------------------------------------------- */
@@ -655,8 +771,10 @@
 
   function openFind(withReplace) {
     // Replace edits the source, which Preview-only does not show: move to Split
-    // so there is something to replace in.
-    if (withReplace && currentView === "preview") setView("split");
+    // so there is something to replace in. Not persisted: the view a document
+    // opens in is the one the user last picked, and this was the app's doing,
+    // not theirs.
+    if (withReplace && currentView === "preview") setView("split", false);
     const wasOpen = find.open;
     find.open = true;
     findBar.hidden = false;
@@ -835,6 +953,7 @@
     if (view !== "text" && previewStale) doRender();
     // Which pane the find bar searches follows the view.
     onFindViewChanged();
+    updateEmptyHint();
     if (persist !== false) persist_state();
   }
 
@@ -914,10 +1033,16 @@
   function openMenu() {
     fileMenu.classList.add("open");
     btnFile.setAttribute("aria-expanded", "true");
+    // Draw the list we already know about first, so the menu opens at its full
+    // height rather than growing under the pointer when the answer comes back.
+    if (recentCache) paintRecent(recentCache);
+    refreshRecentMenu();
   }
   function closeMenu() {
     fileMenu.classList.remove("open");
     btnFile.setAttribute("aria-expanded", "false");
+    closeRecentSubmenu();
+    setHoveredRecent(null);
   }
   function toggleMenu() {
     if (fileMenu.classList.contains("open")) closeMenu(); else openMenu();
@@ -931,10 +1056,166 @@
   fileMenu.addEventListener("click", async (ev) => {
     const b = ev.target.closest("button");
     if (!b) return;
+    // "More recent files" only opens the panel beside it; it is not a command.
+    // Hovering already shows it, so clicking pins it there.
+    if (b === $("recent-more")) {
+      ev.stopPropagation();
+      submenuPinned = !submenuPinned;
+      showRecentSubmenu(submenuPinned);
+      return;
+    }
+    const recentPath = b.getAttribute("data-recent");
+    if (recentPath) {
+      closeMenu();
+      await openRecent(recentPath);
+      return;
+    }
     const action = b.getAttribute("data-action");
+    if (!action) return;
     closeMenu();
     await doFileAction(action);
   });
+
+  /* ---- Recently opened files ------------------------------------------- */
+  // The list itself lives in Nim (it is persisted with the rest of the
+  // settings); this builds the menu rows for it and reports what the user does
+  // to them. Hovering a row and pressing Delete forgets that file.
+
+  let hoveredRecent = null;   // the row Delete would forget
+  let recentCache = null;     // last state fetched, so a repaint needs no round trip
+  let submenuPinned = false;  // "More recent files" clicked open rather than hovered
+  let pointerX = -1, pointerY = -1;
+
+  document.addEventListener("mousemove", (ev) => {
+    pointerX = ev.clientX;
+    pointerY = ev.clientY;
+  }, true);
+
+  // The row Delete acts on is marked, so it is never a guess which file is
+  // about to be forgotten.
+  function setHoveredRecent(row) {
+    if (hoveredRecent === row) return;
+    if (hoveredRecent) hoveredRecent.classList.remove("hovered");
+    hoveredRecent = row;
+    if (hoveredRecent) hoveredRecent.classList.add("hovered");
+  }
+
+  // The submenu opens on hover and stays open when clicked. One class drives
+  // it either way, so what the button reports is what is on screen.
+  function showRecentSubmenu(on) {
+    if (!recentMoreWrap) return;
+    recentMoreWrap.classList.toggle("open", on);
+    const more = $("recent-more");
+    if (more) more.setAttribute("aria-expanded", on ? "true" : "false");
+    if (on) positionRecentSubmenu();
+  }
+
+  function closeRecentSubmenu() {
+    submenuPinned = false;
+    showRecentSubmenu(false);
+  }
+
+  // Enough recent files and the panel would hang off the bottom of the window,
+  // which has no scrollbar of its own to reach it with. Lift it until it fits.
+  function positionRecentSubmenu() {
+    const menu = recentMoreMenu;
+    if (!menu) return;
+    menu.style.top = "";
+    menu.style.maxHeight = "";
+    const wrapTop = recentMoreWrap.getBoundingClientRect().top;
+    const margin = 8;
+    const floor = window.innerHeight - margin;
+    let top = -5;                                   // the resting -0.3rem, in px
+    const height = menu.scrollHeight;
+    if (wrapTop + top + height > floor) top = floor - height - wrapTop;
+    if (wrapTop + top < margin) {
+      top = margin - wrapTop;
+      menu.style.maxHeight = (floor - margin) + "px";
+    }
+    menu.style.top = top + "px";
+  }
+
+  if (recentMoreWrap) {
+    recentMoreWrap.addEventListener("mouseenter", () => showRecentSubmenu(true));
+    recentMoreWrap.addEventListener("mouseleave", () => {
+      if (!submenuPinned) showRecentSubmenu(false);
+    });
+  }
+
+  function recentRow(entry) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "recent";
+    b.setAttribute("role", "menuitem");
+    b.setAttribute("data-recent", entry.path);
+    // The row is the file's own name; where it lives is in the tooltip, so a
+    // menu of them stays a list of names rather than a wall of repeated paths.
+    b.title = entry.path + "\n(Delete forgets this file)";
+    const name = document.createElement("span");
+    name.className = "rf-name";
+    name.textContent = entry.name;
+    b.appendChild(name);
+    b.addEventListener("mouseenter", () => setHoveredRecent(b));
+    b.addEventListener("mouseleave", () => { if (hoveredRecent === b) setHoveredRecent(null); });
+    b.addEventListener("focus", () => setHoveredRecent(b));
+    b.addEventListener("blur", () => { if (hoveredRecent === b) setHoveredRecent(null); });
+    return b;
+  }
+
+  function paintRecent(state) {
+    recentCache = state;
+    if (!recentItems) return;
+    const files = (state && state.enabled && state.files) || [];
+    const inline = (state && state.menuCount) || 10;
+    recentItems.textContent = "";
+    recentMoreMenu.textContent = "";
+    for (let i = 0; i < files.length; i++) {
+      (i < inline ? recentItems : recentMoreMenu).appendChild(recentRow(files[i]));
+    }
+    recentMoreWrap.hidden = files.length <= inline;
+    if (recentMoreWrap.hidden) closeRecentSubmenu();
+    else if (recentMoreWrap.classList.contains("open")) positionRecentSubmenu();
+    const empty = files.length === 0;
+    recentSection.hidden = empty;
+    recentSep.hidden = empty;
+    // Every row was just replaced, so the one under the pointer never got a
+    // mouseenter of its own. Find it again, or a second Delete without moving
+    // the mouse would have nothing to act on.
+    const under = pointerX >= 0 ? document.elementFromPoint(pointerX, pointerY) : null;
+    setHoveredRecent(under && under.closest ? under.closest("button.recent") : null);
+  }
+
+  async function refreshRecentMenu() {
+    try { paintRecent(await window.recentState()); }
+    catch (e) { log("recentState failed: " + e); }
+  }
+
+  async function openRecent(path) {
+    try {
+      const res = await window.openPath(dirty, editor.value, path);
+      if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      applyNavState(res);
+    } catch (e) { log("opening a recent file failed: " + e); }
+  }
+
+  async function forgetRecent(path) {
+    try { paintRecent(await window.recentRemove(path)); }
+    catch (e) { log("recentRemove failed: " + e); }
+  }
+
+  // Delete forgets the row under the pointer (or the focused one), while the
+  // File menu is open.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Delete" && ev.key !== "Del") return;
+    if (!fileMenu.classList.contains("open")) return;
+    const row = hoveredRecent ||
+      (document.activeElement && document.activeElement.closest
+        ? document.activeElement.closest("button.recent") : null);
+    if (!row) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    forgetRecent(row.getAttribute("data-recent"));
+  }, true);
 
   async function doFileAction(action) {
     try {
@@ -948,14 +1229,17 @@
           editor.focus();
           findTextReplaced();
         }
+      } else if (action === "new-window") {
+        await window.newWindow();
       } else if (action === "open") {
         const res = await window.menuOpen(dirty, editor.value);
         if (res && res.opened) await loadIntoEditor(res.text, res.title);
+        applyNavState(res);
       } else if (action === "reload") {
-        // Nim asks about unsaved changes and reports what is on disk now.
-        // Keeping the caret and the scroll makes this a refresh rather than a
-        // reopen: you carry on reading where you were.
-        const res = await window.reloadFile(dirty);
+        // Nim asks what to do about unsaved changes and reports what is on disk
+        // now. Keeping the caret and the scroll makes this a refresh rather than
+        // a reopen: you carry on reading where you were.
+        const res = await window.reloadFile(dirty, editor.value);
         if (res && res.ok) {
           await loadIntoEditor(res.text, res.title, { keepPosition: true });
         }
@@ -968,7 +1252,7 @@
         // paths are read from wherever it now lives: render again so they are.
         if (res && res.saved) { setTitle(res.title, false); await doRender(); }
       } else if (action === "settings") {
-        openSettings();
+        await openSettings();
       } else if (action === "exit") {
         await window.requestExit(dirty, editor.value);
       }
@@ -1011,6 +1295,7 @@
     setTitle(title, false);
     await doRender();
     if (keep) preview.scrollTop = previewScroll;
+    else preview.scrollTop = 0;
     await resetHistory(editor.value);
     editor.focus();
     findTextReplaced();
@@ -1021,6 +1306,7 @@
     try {
       const res = await window.openPath(dirty, editor.value, path);
       if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      applyNavState(res);
     } catch (e) { log("drop openPath failed: " + e); }
   }
   async function openDroppedFile(file) {
@@ -1125,6 +1411,7 @@
     markDirty();
     scheduleRender();
     scheduleCommit();
+    updateEmptyHint();
     // The text moved under the matches, so recompute them — but never move the
     // selection while someone is typing: that would yank the caret onto the
     // current match and the next keystroke would overwrite it.
@@ -1140,6 +1427,14 @@
     // to the engine it would reload the page itself and take the document with
     // it.
     if (ev.key === "F5") { ev.preventDefault(); doFileAction("reload"); return; }
+    // Alt+Left / Alt+Right walk the documents opened this session, as they do
+    // in a browser.
+    if (ev.altKey && !ev.ctrlKey && !ev.metaKey &&
+        (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+      ev.preventDefault();
+      navigate(ev.key === "ArrowRight");
+      return;
+    }
     const mod = ev.ctrlKey || ev.metaKey;
     if (!mod) return;
     const k = (ev.key || "").toLowerCase();
@@ -1169,6 +1464,7 @@
     if (k === "s" && ev.shiftKey) { ev.preventDefault(); doFileAction("save-as"); }
     else if (k === "s") { ev.preventDefault(); doFileAction("save"); }
     else if (k === "o") { ev.preventDefault(); doFileAction("open"); }
+    else if (k === "n" && ev.shiftKey) { ev.preventDefault(); doFileAction("new-window"); }
     else if (k === "n") { ev.preventDefault(); doFileAction("new"); }
   });
 
@@ -1215,13 +1511,36 @@
     return (getComputedStyle(document.documentElement).getPropertyValue(name).trim()) || fallback;
   }
 
-  function openSettings() {
+  const setRecent = $("set-recent");
+  const setRecentClear = $("set-recent-clear");
+
+  function paintRecentSetting(state) {
+    if (state) paintRecent(state);
+    const st = state || recentCache;
+    if (setRecent && st) setRecent.checked = !!st.enabled;
+    // A list hidden by the switch is still remembered, so the count that
+    // decides whether there is anything to clear is the stored one.
+    if (setRecentClear && st) setRecentClear.disabled = !st.storedCount;
+  }
+
+  async function openSettings() {
     if (setFont) setFont.value = (fontChoice in FONT_FAMILIES) ? fontChoice : "";
     if (setBg) setBg.value = bgColor || cssVarHex("--paper", "#EDEBE4");
     if (setFg) setFg.value = textColor || cssVarHex("--ink", "#1A1D24");
     settingsOverlay.hidden = false;
+    try { paintRecentSetting(await window.recentState()); }
+    catch (e) { log("recentState failed: " + e); }
   }
   function closeSettings() { settingsOverlay.hidden = true; }
+
+  if (setRecent) setRecent.addEventListener("change", async () => {
+    try { paintRecentSetting(await window.recentSetEnabled(setRecent.checked)); }
+    catch (e) { log("recentSetEnabled failed: " + e); }
+  });
+  if (setRecentClear) setRecentClear.addEventListener("click", async () => {
+    try { paintRecentSetting(await window.recentClear()); }
+    catch (e) { log("recentClear failed: " + e); }
+  });
 
   if (setFont) setFont.addEventListener("change", () => {
     fontChoice = setFont.value; applyFont(fontChoice); persistSettings();
@@ -1318,6 +1637,9 @@
     setView(currentView, false);
     syncHighlightMetrics();
     await doRender();
+    // Name the window even before anything is opened, so it never sits in the
+    // taskbar as a bare "ZMarkdown" among others.
+    setTitle(baseTitle, false);
     // A file passed on the command line (e.g. opened from the file manager).
     // Nim has already read it; a path that does not exist yet comes back empty
     // and is written on the first save, so the editor just shows it either way.
@@ -1328,8 +1650,12 @@
         if (sf.created) log("new file " + sf.path);
       }
     } catch (e) { log("startup file open failed: " + e); }
+    await refreshNavState();
     await resetHistory(editor.value);
+    updateEmptyHint();
     editor.focus();
+    // Warm the recent list so the first File menu opens at its final height.
+    refreshRecentMenu();
     log("ui ready");
   }
 
@@ -1340,6 +1666,7 @@
     setEditor: async function (text) {
       editor.value = text;
       markDirty();
+      updateEmptyHint();
       await doRender();
       return true;
     },
@@ -1368,6 +1695,61 @@
     },
     setView: function (v) { setView(v, false); return app.getAttribute("data-view"); },
     getView: function () { return app.getAttribute("data-view"); },
+    // Clicking a rendered link, the way a reader does, so the whole path
+    // (delegated handler -> Nim -> editor) is what gets exercised.
+    clickLink: async function (selectorIndex) {
+      const links = reading.querySelectorAll("a[href]");
+      const a = links[selectorIndex || 0];
+      if (!a) return { clicked: false };
+      a.click();
+      // The click hands off to an async chain; give it time to land.
+      await new Promise((r) => setTimeout(r, 700));
+      return {
+        clicked: true,
+        title: baseTitle,
+        text: editor.value,
+        canBack: !btnNavBack.disabled,
+        canForward: !btnNavFwd.disabled,
+      };
+    },
+    navGo: async function (forward) {
+      await navigate(!!forward);
+      return {
+        title: baseTitle,
+        text: editor.value,
+        canBack: !btnNavBack.disabled,
+        canForward: !btnNavFwd.disabled,
+      };
+    },
+    navState: function () {
+      return { canBack: !btnNavBack.disabled, canForward: !btnNavFwd.disabled };
+    },
+    // Finish an openPath() the way the real callers do, so the title, history
+    // arrows, and render all end up where they would in normal use.
+    loadOpened: async function (res) {
+      await loadIntoEditor(res.text, res.title);
+      applyNavState(res);
+      return { title: baseTitle, text: editor.value };
+    },
+    gotoAnchor: function (fragment) { return gotoAnchor(fragment); },
+    // Whether the "this file is empty" watermark is on show right now.
+    emptyHintShown: function () { return emptyHint && !emptyHint.hidden; },
+    recentMenu: async function () {
+      await refreshRecentMenu();
+      const rows = Array.from(fileMenu.querySelectorAll("button.recent"));
+      return {
+        paths: rows.map((b) => b.getAttribute("data-recent")),
+        names: rows.map((b) => b.querySelector(".rf-name").textContent),
+        titles: rows.map((b) => b.title),
+        inline: recentItems.querySelectorAll("button.recent").length,
+        more: recentMoreMenu.querySelectorAll("button.recent").length,
+        sectionShown: !recentSection.hidden,
+      };
+    },
+    recentForget: async function (path) {
+      await forgetRecent(path);
+      return recentCache;
+    },
     runEdit: async function (kind, text, s, e) {
       editor.value = text;
       editor.selectionStart = s; editor.selectionEnd = e;

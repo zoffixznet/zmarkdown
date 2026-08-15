@@ -79,3 +79,81 @@ suite "task list checkboxes":
     let h = renderMarkdown("- one\n- two")
     check not h.contains("checkbox")
     check not h.contains("li class=\"task\"")
+
+suite "heading anchors":
+  test "a slug is lowercase words joined by hyphens":
+    check headingSlug("Build from source") == "build-from-source"
+    check headingSlug("Get a Prebuilt Binary") == "get-a-prebuilt-binary"
+
+  test "punctuation is dropped, hyphens and underscores kept":
+    check headingSlug("What's new? (2026)") == "whats-new-2026"
+    check headingSlug("read_me: the well-known parts") ==
+      "read_me-the-well-known-parts"
+
+  test "markup inside a heading is not part of its name":
+    check headingSlug("The <code>init</code> step") == "the-init-step"
+    check headingSlug("Fish &amp; chips") == "fish--chips"
+
+  test "letters outside ASCII are kept":
+    check headingSlug("Привет мир") == "привет-мир"
+    check headingSlug("Café Life") == "café-life"
+
+  test "a heading with no letters at all has no slug":
+    check headingSlug("!!! ???") == ""
+    check headingSlug("") == ""
+
+  test "headings are rendered with the id their own links use":
+    let h = renderMarkdown("# Build From Source\n\n[go](#build-from-source)")
+    check h.contains("<h1 id=\"build-from-source\">Build From Source</h1>")
+    check h.contains("href=\"#build-from-source\"")
+
+  test "every heading level gets an id":
+    for level in 1 .. 6:
+      let h = renderMarkdown(repeat("#", level) & " Deep Heading")
+      check h.contains("<h" & $level & " id=\"deep-heading\">")
+
+  test "repeated headings are numbered rather than sharing an id":
+    let h = renderMarkdown("# Notes\n\n# Notes\n\n# Notes")
+    check h.contains("<h1 id=\"notes\">")
+    check h.contains("<h1 id=\"notes-1\">")
+    check h.contains("<h1 id=\"notes-2\">")
+
+  test "a heading whose own name collides with a numbered one still gets its own":
+    # "Foo", "Foo" and "Foo 1" all want to be #foo-1; only one may have it, and
+    # every heading must still end up reachable.
+    let h = renderMarkdown("# Foo\n\n# Foo\n\n# Foo 1\n\n# Foo")
+    var ids: seq[string]
+    var i = 0
+    while true:
+      let at = h.find("id=\"", i)
+      if at < 0: break
+      let stop = h.find('"', at + 4)
+      ids.add(h[at + 4 ..< stop])
+      i = stop
+    check ids.len == 4
+    check ids[0] == "foo"
+    for k in 0 ..< ids.len:
+      for j in k + 1 ..< ids.len:
+        check ids[k] != ids[j]
+
+  test "a heading quoted inside a raw html code sample is left as text":
+    let h = renderMarkdown("<pre><code>&lt;h1&gt;x&lt;/h1&gt;</code></pre>\n")
+    check not h.contains("id=")
+    check addHeadingIds("<pre><h1>literal</h1></pre>") ==
+      "<pre><h1>literal</h1></pre>"
+
+  test "many unclosed heading tags do not take quadratic time":
+    # Each unclosed opener used to rescan to the end of the document.
+    let noisy = repeat("<h1>", 20000)
+    check addHeadingIds(noisy) == noisy
+
+  test "a heading with nothing to name it is left alone":
+    let h = renderMarkdown("# ???")
+    check h.contains("<h1>???</h1>")
+
+  test "raw heading html that already has attributes is untouched":
+    let h = addHeadingIds("""<h2 id="mine">Kept</h2><h2 class="x">Also kept</h2>""")
+    check h == """<h2 id="mine">Kept</h2><h2 class="x">Also kept</h2>"""
+
+  test "an unclosed heading tag does not lose text":
+    check addHeadingIds("<h1>no end").contains("no end")

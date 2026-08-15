@@ -177,7 +177,9 @@ button.icon svg { width: 16px; height: 16px; display: block; }
   position: absolute;
   top: 2.3rem;
   left: 0;
-  min-width: 11rem;
+  /* Wide enough that the longest row and its accelerator sit on one line even
+   * when nothing else in the menu is pushing it open. */
+  min-width: 14rem;
   background: var(--paper);
   border: 1px solid var(--rule);
   border-radius: 8px;
@@ -196,9 +198,54 @@ button.icon svg { width: 16px; height: 16px; display: block; }
   padding: 0.4rem 0.5rem;
   color: var(--ink);
   height: auto;
+  white-space: nowrap;
 }
 .menu button .accel { color: var(--ink-soft); font-size: 0.78rem; }
 .menu .menu-sep { height: 1px; background: var(--rule); margin: 0.25rem 0.2rem; }
+.menu .menu-sep[hidden], .menu #recent-section[hidden] { display: none; }
+
+/* ---- Recent files in the File menu -------------------------------------- */
+
+/* A quiet section heading, so the file names are not mistaken for commands. */
+.menu .menu-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 0.35rem 0.5rem 0.2rem;
+}
+
+/* One file per row, named the way you would name it out loud. Where it lives is
+ * in the tooltip, so the menu stays a list of names. */
+.menu button.recent {
+  justify-content: flex-start;
+  font-size: 0.83rem;
+  max-width: 22rem;
+}
+.menu button.recent .rf-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;   /* flex items refuse to shrink below their text without this */
+}
+/* The row about to be forgotten if Delete is pressed. */
+.menu button.recent.hovered { background: var(--accent-soft); color: var(--ink); }
+
+/* "More recent files", which opens a second panel beside the first. */
+.submenu-wrap { position: relative; }
+.submenu-wrap[hidden] { display: none; }
+.menu .submenu {
+  top: -0.3rem;
+  left: 100%;
+  /* No gap: the panel has to be adjacent to the row that opens it, or crossing
+   * to it would pass over nothing and close it. */
+  margin-left: 0;
+  overflow-y: auto;
+  min-width: 12rem;
+}
+/* One class, set from JS on hover and on click alike, so what the row reports
+ * about itself is always what is on screen. */
+.submenu-wrap.open > .submenu { display: block; }
 
 .doc-title {
   font-size: 0.8rem;
@@ -311,7 +358,7 @@ button.toggle { font-size: 0.8rem; font-weight: 600; }
 .pane { min-height: 0; overflow: hidden; height: 100%; }
 
 #editor-pane { display: flex; background: var(--paper); }
-#preview-pane { display: flex; }
+#preview-pane { display: flex; position: relative; }
 
 /* Split mode uses inline flex-basis set from JS via the divider ratio. In Text
  * and Preview modes one pane is hidden entirely and the divider removed. */
@@ -451,6 +498,48 @@ button.toggle { font-size: 0.8rem; font-weight: 600; }
   background: var(--paper);
 }
 
+/* ---- "This file is empty" watermark ------------------------------------- */
+
+/* A blank preview looks exactly like a blank editor, and typing into it goes
+ * nowhere. This says which one you are looking at. It is a watermark, not a
+ * dialog: faint, centered, and out of the way of the scrollbar - but clicking it
+ * does the obvious thing and switches to Text. */
+#empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+#empty-hint[hidden] { display: none; }
+#empty-hint .empty-mark {
+  pointer-events: auto;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1.6rem 2.2rem;
+  border-radius: 12px;
+  color: var(--ink-soft);
+  opacity: 0.55;
+  user-select: none;
+  -webkit-user-select: none;
+  text-align: center;
+  transition: opacity 0.12s ease;
+}
+#empty-hint .empty-mark:hover { opacity: 0.85; }
+#empty-hint svg { width: 46px; height: 46px; opacity: 0.7; }
+#empty-hint .empty-title {
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+#empty-hint .empty-sub { font-size: 0.85rem; }
+
 /* Middle-click autoscroll (like a Windows browser). The marker sits at the
    anchor point; the mouse cursor becomes an all-scroll cursor while active. */
 #autoscroll-marker {
@@ -489,6 +578,8 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
   border-radius: 10px;
   box-shadow: 0 12px 40px var(--shadow);
   width: min(420px, 92vw);
+  max-height: 92vh;
+  overflow-y: auto;
   padding: 1.2rem 1.3rem 1.1rem;
   font-family: var(--sans);
 }
@@ -507,7 +598,12 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
   width: 46px; height: 30px; padding: 0; cursor: pointer;
   border: 1px solid var(--rule); border-radius: 6px; background: var(--paper);
 }
-#settings-dialog .dlg-note { font-size: 0.8rem; color: var(--ink-soft); margin: 0.2rem 0 1rem; }
+#settings-dialog .dlg-note { font-size: 0.8rem; color: var(--ink-soft); margin: 0.2rem 0 1rem; line-height: 1.45; }
+#settings-dialog .dlg-sep { height: 1px; background: var(--rule); margin: 0.2rem 0 1rem; }
+#settings-dialog .dlg-row-end { justify-content: flex-end; }
+#settings-dialog input[type="checkbox"] {
+  width: 17px; height: 17px; margin: 0; cursor: pointer; accent-color: var(--accent);
+}
 #settings-dialog .dlg-buttons { display: flex; justify-content: flex-end; gap: 0.6rem; }
 #settings-dialog .dlg-buttons button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 #settings-dialog .dlg-buttons button.primary:hover { filter: brightness(1.06); color: #fff; }

@@ -12,10 +12,23 @@
       <button id="btn-file" aria-haspopup="true" aria-expanded="false">File</button>
       <div id="file-menu" class="menu" role="menu">
         <button data-action="new" role="menuitem">New<span class="accel">Ctrl+N</span></button>
+        <button data-action="new-window" role="menuitem">New Window<span class="accel">Ctrl+Shift+N</span></button>
         <button data-action="open" role="menuitem">Open<span class="accel">Ctrl+O</span></button>
-        <button data-action="reload" role="menuitem">Reload from disk<span class="accel">F5</span></button>
+        <button data-action="reload" role="menuitem">Refresh<span class="accel">F5</span></button>
         <button data-action="save" role="menuitem">Save<span class="accel">Ctrl+S</span></button>
         <button data-action="save-as" role="menuitem">Save As<span class="accel">Ctrl+Shift+S</span></button>
+        <!-- Recent files, filled in by JS. The separator and the section are
+             hidden together whenever there is nothing to list. -->
+        <div class="menu-sep" id="recent-sep" hidden></div>
+        <div id="recent-section" hidden>
+          <div class="menu-label" id="recent-label">Recent files</div>
+          <div id="recent-items"></div>
+          <div class="submenu-wrap" id="recent-more-wrap" hidden>
+            <button type="button" class="has-submenu" id="recent-more" role="menuitem"
+                    aria-haspopup="true" aria-expanded="false">More recent files<span class="accel">&#9656;</span></button>
+            <div class="menu submenu" id="recent-more-menu" role="menu"></div>
+          </div>
+        </div>
         <div class="menu-sep"></div>
         <button data-action="settings" role="menuitem">Settings</button>
         <div class="menu-sep"></div>
@@ -62,6 +75,19 @@
       <button data-view="text" id="vm-text" title="Text only">Text</button>
       <button data-view="split" id="vm-split" title="Split view" class="active">Split</button>
       <button data-view="preview" id="vm-preview" title="Preview only">Preview</button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <!-- Walking the documents opened this session, the way a browser's arrows
+         walk pages. Both start disabled: nothing has been opened yet. -->
+    <div class="tb-group" role="group" aria-label="Document history">
+      <button class="icon" id="nav-back" title="Back (Alt+Left)" aria-label="Back" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6 4 12l6 6"/><path d="M4 12h16"/></svg>
+      </button>
+      <button class="icon" id="nav-fwd" title="Forward (Alt+Right)" aria-label="Forward" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m14 6 6 6-6 6"/><path d="M20 12H4"/></svg>
+      </button>
     </div>
 
     <div class="tb-spacer"></div>
@@ -127,6 +153,15 @@
          aria-label="Resize panes (arrow keys)"></div>
     <div id="preview-pane" class="pane">
       <div id="preview"><div class="reading" id="reading"></div></div>
+      <!-- Shown over an empty document in Preview, where a blank pane is easily
+           mistaken for an empty editor and typing goes nowhere. -->
+      <div id="empty-hint" hidden>
+        <div class="empty-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></svg>
+          <div class="empty-title">This file is empty</div>
+          <div class="empty-sub">Switch to Text mode to write in it</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -153,6 +188,19 @@
         <input type="color" id="set-bg" value="#EDEBE4">
       </div>
       <div class="dlg-note">Applies to both the editor and the preview.</div>
+      <div class="dlg-sep"></div>
+      <div class="dlg-row">
+        <label for="set-recent">Remember recently opened files</label>
+        <input type="checkbox" id="set-recent" checked>
+      </div>
+      <div class="dlg-note">
+        Listed in the File menu. Turning this off stops new files being added and
+        hides the list; hover a file in the menu and press Delete to forget just
+        that one.
+      </div>
+      <div class="dlg-row dlg-row-end">
+        <button id="set-recent-clear" type="button">Clear recent files list</button>
+      </div>
       <div class="dlg-buttons">
         <button id="set-reset" type="button">Reset to defaults</button>
         <button id="set-close" type="button" class="primary">Close</button>

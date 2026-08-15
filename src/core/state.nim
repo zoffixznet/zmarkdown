@@ -7,6 +7,8 @@
 
 import std/[json, os, options, math]
 
+import recent
+
 type
   ViewMode* = enum
     ## The three ways to look at a document.
@@ -28,6 +30,8 @@ type
                           ## "gpu" (3D acceleration works), or "cpu" (render in
                           ## software; e.g. a VM without 3D). Kept fresh by a
                           ## background re-probe on every launch.
+    recentEnabled*: bool  ## settings: whether opened files are remembered at all
+    recentFiles*: seq[string] ## absolute paths of recently opened files, newest first
 
 const
   # Sane minimums so a tiny saved size cannot make the window unusable.
@@ -52,6 +56,8 @@ func defaultState*(): UiState =
     bgColor: "",
     textColor: "",
     renderMode: "",
+    recentEnabled: true,
+    recentFiles: @[],
   )
 
 func clampRatio*(r: float): float =
@@ -91,6 +97,7 @@ func normalized*(s: UiState): UiState =
   # here we only enforce the lower bound so a corrupt tiny value is repaired.
   if result.width < MinWidth: result.width = MinWidth
   if result.height < MinHeight: result.height = MinHeight
+  result.recentFiles = sanitizeRecent(s.recentFiles)
 
 proc configDir*(): string =
   ## Resolve the per-user config directory for ZMarkdown.
@@ -115,6 +122,9 @@ proc statePath*(): string =
 
 func toJson*(s: UiState): JsonNode =
   ## Serialize state to JSON.
+  var recent = newJArray()
+  for p in s.recentFiles:
+    recent.add(%p)
   %*{
     "width": s.width,
     "height": s.height,
@@ -125,6 +135,8 @@ func toJson*(s: UiState): JsonNode =
     "bgColor": s.bgColor,
     "textColor": s.textColor,
     "renderMode": s.renderMode,
+    "recentEnabled": s.recentEnabled,
+    "recentFiles": recent,
   }
 
 func parseState*(node: JsonNode): UiState =
@@ -149,6 +161,15 @@ func parseState*(node: JsonNode): UiState =
     # Only the known verdicts; anything else means "probe again".
     if node["renderMode"].getStr() in ["gpu", "cpu"]:
       result.renderMode = node["renderMode"].getStr()
+  if node.hasKey("recentEnabled") and node["recentEnabled"].kind == JBool:
+    result.recentEnabled = node["recentEnabled"].getBool()
+  if node.hasKey("recentFiles") and node["recentFiles"].kind == JArray:
+    # Anything in there that is not a string is not a path, so it is dropped
+    # rather than allowed to poison the list.
+    var paths: seq[string]
+    for item in node["recentFiles"]:
+      if item.kind == JString: paths.add(item.getStr())
+    result.recentFiles = paths
   if node.hasKey("view") and node["view"].kind == JString:
     case node["view"].getStr()
     of "text": result.view = vmText
@@ -190,12 +211,27 @@ proc saveState*(s: UiState, path = ""): bool =
   ## Persist state to disk. Creates the config directory if needed. Returns true
   ## on success; on any error it returns false (the caller logs and carries on
   ## rather than failing). Never raises.
+  ##
+  ## The file is written beside itself and moved into place, so it is replaced
+  ## in one step. Preferences are written the moment they change and several
+  ## windows share this one file: a reader must never be able to catch it
+  ## half-written, which would look exactly like a corrupt file and be repaired
+  ## into defaults.
   let p = if path.len > 0: path else: statePath()
   try:
     let dir = p.parentDir()
     if dir.len > 0 and not dirExists(dir):
       createDir(dir)
-    writeFile(p, pretty(s.toJson()))
+    # The temporary name carries the process id so two windows writing at the
+    # same moment cannot land on each other's half-written file.
+    let tmp = p & "." & $getCurrentProcessId() & ".tmp"
+    try:
+      writeFile(tmp, pretty(s.toJson()))
+      moveFile(tmp, p)
+    except CatchableError:
+      try: removeFile(tmp)
+      except CatchableError: discard
+      raise
     true
   except CatchableError:
     false

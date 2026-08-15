@@ -32,6 +32,33 @@ suite "json round trip":
     check parseState(parseJson("""{"renderMode": "quantum"}""")).renderMode == ""
     check parseState(parseJson("""{"renderMode": 7}""")).renderMode == ""
 
+suite "recent files in the persisted state":
+  test "tracking is on by default and the list starts empty":
+    let s = defaultState()
+    check s.recentEnabled
+    check s.recentFiles.len == 0
+
+  test "the list and the switch round trip":
+    var s = defaultState()
+    s.recentEnabled = false
+    s.recentFiles = @["/b.md", "/a.md"]
+    let back = parseState(s.toJson())
+    check not back.recentEnabled
+    check back.recentFiles == @["/b.md", "/a.md"]
+
+  test "entries that are not strings are dropped rather than kept":
+    let s = parseState(parseJson("""{"recentFiles": ["/a.md", 7, null, "/b.md"]}"""))
+    check s.recentFiles == @["/a.md", "/b.md"]
+
+  test "a stored list with duplicates or blanks is repaired on load":
+    let s = parseState(parseJson(
+      """{"recentFiles": ["/a.md", "", "/a.md", "/b.md"]}"""))
+    check s.recentFiles == @["/a.md", "/b.md"]
+
+  test "a wrong-typed recentFiles is ignored":
+    check parseState(parseJson("""{"recentFiles": "nope"}""")).recentFiles.len == 0
+    check parseState(parseJson("""{"recentEnabled": "yes"}""")).recentEnabled
+
 suite "corrupt or missing input falls back to defaults":
   test "invalid json string yields none":
     check loadStateFromString("this is not json {{{").isNone

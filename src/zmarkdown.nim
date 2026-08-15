@@ -5,7 +5,7 @@
 ## transforms, markdown rendering, file IO, dialogs, state) is Nim, reached from
 ## the page through bound procs. The webview is only the display.
 
-import std/[json, os, times, strutils, base64, options, browsers, uri]
+import std/[json, os, times, strutils, base64, options, browsers, uri, sequtils]
 import std/atomics
 import std/osproc
 import std/streams
@@ -23,6 +23,8 @@ import core/dialogs
 import core/history as histmod
 import core/search as srch
 import core/images as imgs
+import core/nav
+import core/recent
 
 # Direct native calls for window geometry and the maximized state. On Linux we
 # track size and maximized live through GTK signals, so the values are captured
@@ -507,9 +509,39 @@ type
                            ## so a change made behind our back can be noticed
     ui: UiState            ## restored/persisted UI state
     startupFile: string    ## file to open on launch (from the command line), "" if none
+    nav: NavHistory        ## the documents opened this run, for back and forward
+    statePath: string      ## where persisted state lives; "" means the real
+                           ## per-user config file. Only the self-test overrides
+                           ## it, so a headless run cannot touch a real config.
     exiting: bool
 
 var app: App
+
+proc appStatePath(): string =
+  ## The state file this run reads and writes.
+  if app.statePath.len > 0: app.statePath else: statePath()
+
+# ---- Processes this window starts -------------------------------------------
+
+var launchFlags: seq[string]
+  ## The command-line switches this run was started with that a second window
+  ## should inherit (the graphics override, the log level). The file argument is
+  ## deliberately not among them: a new window starts empty.
+
+var spawnedChildren: seq[Process]
+  ## Handles for the processes this window started - other windows, and the
+  ## desktop's own openers - kept only so one that has since finished can be let
+  ## go of rather than left unreaped.
+
+proc reapSpawnedChildren() =
+  for p in spawnedChildren.mitems:
+    var finished = true
+    try: finished = not p.running
+    except CatchableError: discard
+    if finished:
+      try: p.close() except CatchableError: discard
+      p = nil
+  spawnedChildren.keepItIf(it != nil)
 
 # Local images the preview may ask for, by the token the rendered HTML carries.
 var imageReg = initImageRegistry()
@@ -531,17 +563,80 @@ proc watchdogProc() {.thread.} =
 proc docName(): string =
   if app.currentPath.len > 0: extractFilename(app.currentPath) else: "Untitled"
 
-proc setCurrentFile(path: string) =
+proc absolutized(path: string): string =
+  ## An absolute, tidied form of a path, for the lists that have to recognize
+  ## the same file however it was named. Falls back to the path as given when
+  ## the filesystem will not answer.
+  if path.len == 0: return ""
+  try: absolutePath(normalizedPath(path))
+  except CatchableError: path
+
+proc rememberRecent(path: string) =
+  ## Add a just-opened file to the recent list and write it out at once, merged
+  ## onto whatever is on disk: with two windows open, neither should lose the
+  ## other's files. Does nothing when the user has switched the tracking off.
+  if not app.ui.recentEnabled or path.len == 0: return
+  let abs = absolutized(path)
+  if app.ui.recentFiles.len > 0 and app.ui.recentFiles[0] == abs:
+    return  # already the most recent; nothing would change
+  var disk = loadState(appStatePath())
+  disk.recentFiles = addRecent(disk.recentFiles, abs)
+  app.ui.recentFiles = disk.recentFiles
+  if not saveState(disk, appStatePath()):
+    vlog("could not save the recent files list: " & appStatePath())
+
+proc setCurrentFile(path: string; remember = true) =
   ## Point the app at a file (or, with "", at nothing) and record how that file
   ## looks right now. Every later comparison against disk is against this stamp,
   ## so it has to be taken everywhere the open document changes.
+  ##
+  ## `remember` is false where the document is being revisited rather than
+  ## opened - stepping back and forward through the session's own chain, which
+  ## should not keep reshuffling the list of what was recently opened.
   app.currentPath = path
   app.diskStamp = fileStamp(path)
+  # A path with no file behind it yet (`zmarkdown new-notes.md`) is not a file
+  # anyone has opened, so it is remembered only once the first save creates it.
+  if remember and app.diskStamp.exists: rememberRecent(path)
+
+proc setWindowTitle(name: string) =
+  ## Put the open document's name in the window title, after the application's
+  ## own, so a taskbar full of ZMarkdown windows says which file each one holds.
+  ## (It is also what stops a desktop from labelling them "ZMarkdown <2>",
+  ## "ZMarkdown <3>": those numbers only appear because the titles were
+  ## identical.)
+  if app.w == nil: return
+  let shown = if name.len > 0: name else: docName()
+  try:
+    app.w.title = "ZMarkdown - " & shown
+  except CatchableError as e:
+    vlog("could not set the window title: " & e.msg)
 
 proc diskMovedOn(): bool =
   ## Has the open file been changed by something other than us since we last
   ## read or wrote it?
   app.currentPath.len > 0 and changed(app.diskStamp, fileStamp(app.currentPath))
+
+# ---- Navigation history ----------------------------------------------------
+#
+# The chain of documents opened this run, so back and forward can walk it. Only
+# opening a document extends the chain; walking it with the buttons moves along
+# what is already there. The same file opened twice is two links in the chain,
+# which is what makes "back" mean "where I just was" rather than "somewhere else
+# that happens to have the same name".
+
+proc navRecord(path: string) =
+  ## Extend the chain with a newly opened document.
+  if path.len == 0: return
+  app.nav.push(absolutized(path))
+  vlog("history: " & $(app.nav.position + 1) & " of " & $app.nav.len)
+
+proc navJson(): JsonNode =
+  %*{"canBack": app.nav.canBack, "canForward": app.nav.canForward}
+
+proc jsNavState(id: string; req: JsonNode): string =
+  ## navState() -> {canBack, canForward}
+  $ navJson()
 
 # ---- JSON helpers for the bridge -------------------------------------------
 
@@ -599,6 +694,11 @@ proc jsImageData(id: string; req: JsonNode): string =
 
 proc jsApplyEdit(id: string; req: JsonNode): string =
   ## applyEdit(kind, text, selStart, selEnd) -> {text, selStart, selEnd}
+  # Indexing a short argument list raises IndexDefect, which `except
+  # CatchableError` does not catch, so arity is checked before anything else.
+  if req.len < 4:
+    return $ %*{"text": (if req.len > 1: req[1].getStr() else: ""),
+                "selStart": 0, "selEnd": 0}
   try:
     let
       kind = req[0].getStr()
@@ -703,67 +803,6 @@ proc jsSearchReplaceAll(id: string; req: JsonNode): string =
     result = $ %*{"text": (if req.len > 0: req[0].getStr() else: ""),
                   "selStart": 0, "selEnd": 0, "replaced": 0}
 
-proc jsLoadInitialState(id: string; req: JsonNode): string =
-  ## loadInitialState() -> the restored UI state (view and split ratio matter to JS).
-  result = $ app.ui.toJson()
-
-proc jsStartupFile(id: string; req: JsonNode): string =
-  ## startupFile() -> {path, text, title, created}. The file passed on the
-  ## command line (e.g. opened from the file manager), read and ready for the
-  ## editor, or `{path: ""}` when there was none.
-  ##
-  ## A path that does not exist yet is not an error: the editor opens empty
-  ## under that name and the file is written on the first save, so
-  ## `zmarkdown notes.md` is a way to start a new document as well as to open
-  ## one. The startup file is cleared after this first read so it cannot reopen
-  ## later in the session.
-  let path = app.startupFile
-  app.startupFile = ""
-  if path.len == 0:
-    return $ %*{"path": ""}
-  if dirExists(path):
-    logLine("open failed (" & path & "): it is a directory")
-    errorDialog("Open failed", "That path is a directory, not a file:\n" & path)
-    return $ %*{"path": ""}
-  if not fileExists(path):
-    setCurrentFile(path)
-    logLine("new file " & path & " (written on the first save)")
-    return $ %*{"path": path, "text": "", "title": docName(), "created": true}
-  let r = readTextFile(path)
-  if not r.ok:
-    logLine("open failed (" & path & "): " & r.error)
-    errorDialog("Open failed", r.error)
-    return $ %*{"path": ""}
-  setCurrentFile(path)
-  logLine("opened " & path)
-  $ %*{"path": path, "text": r.value, "title": docName(), "created": false}
-
-proc jsPersistState(id: string; req: JsonNode): string =
-  ## persistState(view, ratio). Updates the in-memory state; the actual disk
-  ## write happens on exit (and here opportunistically). Fire and forget.
-  try:
-    if req.len >= 2:
-      case req[0].getStr()
-      of "text": app.ui.view = vmText
-      of "split": app.ui.view = vmSplit
-      of "preview": app.ui.view = vmPreview
-      else: discard
-      app.ui.splitRatio = clampRatio(req[1].getFloat())
-  except CatchableError:
-    discard
-  result = "true"
-
-proc jsSaveSettings(id: string; req: JsonNode): string =
-  ## saveSettings(fontChoice, bgColor, textColor). Updates the in-memory settings;
-  ## the disk write happens on exit like the other UI state.
-  try:
-    if req.len >= 1 and req[0].kind == JString: app.ui.fontChoice = req[0].getStr()
-    if req.len >= 2 and req[1].kind == JString: app.ui.bgColor = req[1].getStr()
-    if req.len >= 3 and req[2].kind == JString: app.ui.textColor = req[2].getStr()
-  except CatchableError:
-    discard
-  result = "true"
-
 proc captureWindowState(): tuple[w, h, maximized: int] =
   ## Read the window's current non-maximized size and whether it is maximized, so
   ## exit persists what the user actually has now. Falls back to the stored values
@@ -800,18 +839,224 @@ when defined(linux):
     of 2: app.ui.renderMode = "cpu"
     else: discard
 
+type
+  Pref = enum
+    ## A single persisted preference, so a write can carry exactly the one the
+    ## user changed.
+    pfView, pfRatio, pfFont, pfColors, pfRecent
+
+var
+  prefsPending: set[Pref]  ## changes deferred by the write throttle
+  lastPrefsWrite = 0.0     ## epochTime of the last preference write
+
+const PrefsWriteInterval = 0.5
+  ## Shortest gap between preference writes made by a control the user can hold
+  ## down or drag. Dragging a color picker emits a change per mouse move; without
+  ## this, each one would be a read-modify-write of the state file.
+
+proc persistPrefs(fields: set[Pref]) =
+  ## Write the preferences the user has just changed, merged onto what is on
+  ## disk now rather than over it. Doing it at the moment of the change (instead
+  ## of only at exit) is what makes "the view mode I last picked" mean that even
+  ## with several windows open: the newest change is the one on disk, whichever
+  ## window later happens to close last.
+  ##
+  ## Only the named fields are written. A window that never touched the font, or
+  ## the switch for the recent files list, must not put its own stale copy of
+  ## them back over what another window changed a moment ago.
+  if fields == {}: return
+  prefsPending = prefsPending - fields
+  lastPrefsWrite = epochTime()
+  var disk = loadState(appStatePath())
+  if pfView in fields: disk.view = app.ui.view
+  if pfRatio in fields: disk.splitRatio = app.ui.splitRatio
+  if pfFont in fields: disk.fontChoice = app.ui.fontChoice
+  if pfColors in fields:
+    disk.bgColor = app.ui.bgColor
+    disk.textColor = app.ui.textColor
+  if pfRecent in fields: disk.recentEnabled = app.ui.recentEnabled
+  if saveState(disk, appStatePath()):
+    vlog("preferences saved: " & appStatePath())
+  else:
+    logLine("could not save preferences (skipping persistence): " & appStatePath())
+
+proc persistPrefsSoon(fields: set[Pref]) =
+  ## Write a preference change that arrived from a control the user may be
+  ## dragging. The first change goes out at once; a burst behind it is collapsed
+  ## into one write, and whatever is still pending is flushed at exit.
+  if epochTime() - lastPrefsWrite >= PrefsWriteInterval: persistPrefs(fields)
+  else: prefsPending = prefsPending + fields
+
 proc persistNow() =
-  ## Write current UI state to disk, logging but never failing on error.
+  ## Write current UI state to disk, logging but never failing on error. The
+  ## window geometry is this window's to report; everything else is merged onto
+  ## what is on disk, since another window may have changed it more recently.
   let s = captureWindowState()
   app.ui.width = s.w
   app.ui.height = s.h
   app.ui.maximized = s.maximized != 0
   when defined(linux):
     foldProbeVerdict()
-  if saveState(app.ui):
-    vlog("state saved: " & statePath())
+  # A color still in flight when the window closes.
+  if prefsPending != {}: persistPrefs(prefsPending)
+  var disk = loadState(appStatePath())
+  disk.width = app.ui.width
+  disk.height = app.ui.height
+  disk.maximized = app.ui.maximized
+  disk.renderMode = app.ui.renderMode
+  if saveState(disk, appStatePath()):
+    vlog("state saved: " & appStatePath())
   else:
-    logLine("could not save state (skipping persistence): " & statePath())
+    logLine("could not save state (skipping persistence): " & appStatePath())
+
+proc jsLoadInitialState(id: string; req: JsonNode): string =
+  ## loadInitialState() -> the restored UI state (view and split ratio matter to JS).
+  result = $ app.ui.toJson()
+
+proc jsStartupFile(id: string; req: JsonNode): string =
+  ## startupFile() -> {path, text, title, created}. The file passed on the
+  ## command line (e.g. opened from the file manager), read and ready for the
+  ## editor, or `{path: ""}` when there was none.
+  ##
+  ## A path that does not exist yet is not an error: the editor opens empty
+  ## under that name and the file is written on the first save, so
+  ## `zmarkdown notes.md` is a way to start a new document as well as to open
+  ## one. The startup file is cleared after this first read so it cannot reopen
+  ## later in the session.
+  let path = app.startupFile
+  app.startupFile = ""
+  if path.len == 0:
+    return $ %*{"path": ""}
+  if dirExists(path):
+    logLine("open failed (" & path & "): it is a directory")
+    errorDialog("Open failed", "That path is a directory, not a file:\n" & path)
+    return $ %*{"path": ""}
+  if not fileExists(path):
+    setCurrentFile(path)
+    navRecord(path)
+    logLine("new file " & path & " (written on the first save)")
+    return $ %*{"path": path, "text": "", "title": docName(), "created": true}
+  let r = readTextFile(path)
+  if not r.ok:
+    logLine("open failed (" & path & "): " & r.error)
+    errorDialog("Open failed", r.error)
+    return $ %*{"path": ""}
+  setCurrentFile(path)
+  navRecord(path)
+  logLine("opened " & path)
+  $ %*{"path": path, "text": r.value, "title": docName(), "created": false}
+
+proc jsPersistState(id: string; req: JsonNode): string =
+  ## persistState(view, ratio). Called whenever the user switches view or moves
+  ## the divider, and written out at once: the view a file opens in is whichever
+  ## the user last chose, and that has to survive a window being killed rather
+  ## than closed. Fire and forget.
+  var viewChanged = false
+  var ratioChanged = false
+  try:
+    if req.len >= 2:
+      let before = app.ui
+      case req[0].getStr()
+      of "text": app.ui.view = vmText
+      of "split": app.ui.view = vmSplit
+      of "preview": app.ui.view = vmPreview
+      else: discard
+      app.ui.splitRatio = clampRatio(req[1].getFloat())
+      viewChanged = before.view != app.ui.view
+      ratioChanged = before.splitRatio != app.ui.splitRatio
+  except CatchableError:
+    discard
+  # Both are single deliberate acts - a click on a view button, a divider
+  # released - so both go out immediately and are on disk even if the window is
+  # killed rather than closed.
+  var fields: set[Pref]
+  if viewChanged: fields.incl pfView
+  if ratioChanged: fields.incl pfRatio
+  persistPrefs(fields)
+  result = "true"
+
+proc jsSaveSettings(id: string; req: JsonNode): string =
+  ## saveSettings(fontChoice, bgColor, textColor). Written out as it changes, for
+  ## the same reason the view mode is - collapsed, since a color picker being
+  ## dragged reports every shade it passes through.
+  var fields: set[Pref]
+  try:
+    let before = app.ui
+    if req.len >= 1 and req[0].kind == JString: app.ui.fontChoice = req[0].getStr()
+    if req.len >= 2 and req[1].kind == JString: app.ui.bgColor = req[1].getStr()
+    if req.len >= 3 and req[2].kind == JString: app.ui.textColor = req[2].getStr()
+    if before.fontChoice != app.ui.fontChoice: fields.incl pfFont
+    if before.bgColor != app.ui.bgColor or before.textColor != app.ui.textColor:
+      fields.incl pfColors
+  except CatchableError:
+    discard
+  persistPrefsSoon(fields)
+  result = "true"
+
+# ---- Recent files ----------------------------------------------------------
+
+proc recentJson(): JsonNode =
+  ## The recent list as the menu wants it: newest first, each with the name to
+  ## show and the full path to put in its tooltip. Empty while the user has the
+  ## tracking switched off, so nothing that was remembered before then shows up.
+  var files = newJArray()
+  if app.ui.recentEnabled:
+    for p in app.ui.recentFiles:
+      files.add(%*{"path": p, "name": recentName(p)})
+  # storedCount counts what is remembered whether or not it is on show, so the
+  # Clear button can tell "nothing to clear" from "hidden by the switch".
+  %*{"enabled": app.ui.recentEnabled, "files": files,
+     "storedCount": app.ui.recentFiles.len, "menuCount": MenuRecent}
+
+proc jsRecentState(id: string; req: JsonNode): string =
+  ## recentState() -> {enabled, files, storedCount, menuCount}
+  ##
+  ## Re-read first: the list is shared with every other window, and a menu that
+  ## showed only what this one had opened would miss the file you just read next
+  ## door and still offer files you told that window to forget.
+  ##
+  ## Opening the File menu is also a convenient regular moment to let go of any
+  ## window or viewer this one started that has since been closed.
+  reapSpawnedChildren()
+  let disk = loadState(appStatePath())
+  app.ui.recentFiles = disk.recentFiles
+  app.ui.recentEnabled = disk.recentEnabled
+  $ recentJson()
+
+proc jsRecentRemove(id: string; req: JsonNode): string =
+  ## recentRemove(path) -> recentState(). Forget one file, as if it had never
+  ## been opened.
+  let path = if req.len > 0 and req[0].kind == JString: req[0].getStr() else: ""
+  if path.len > 0:
+    var disk = loadState(appStatePath())
+    disk.recentFiles = removeRecent(disk.recentFiles, path)
+    app.ui.recentFiles = disk.recentFiles
+    if not saveState(disk, appStatePath()):
+      vlog("could not save the recent files list: " & appStatePath())
+    else:
+      vlog("forgot recent file " & path)
+  $ recentJson()
+
+proc jsRecentClear(id: string; req: JsonNode): string =
+  ## recentClear() -> recentState(). Empty the list and start over.
+  var disk = loadState(appStatePath())
+  disk.recentFiles = @[]
+  app.ui.recentFiles = @[]
+  if saveState(disk, appStatePath()):
+    logLine("recent files list cleared")
+  else:
+    vlog("could not save the recent files list: " & appStatePath())
+  $ recentJson()
+
+proc jsRecentSetEnabled(id: string; req: JsonNode): string =
+  ## recentSetEnabled(on) -> recentState(). Turning the tracking off stops new
+  ## files being recorded and hides the list; it does not erase what is already
+  ## remembered, which the Clear button is there for.
+  if req.len > 0 and req[0].kind == JBool:
+    app.ui.recentEnabled = req[0].getBool()
+    persistPrefs({pfRecent})
+    logLine("recent files tracking " & (if app.ui.recentEnabled: "on" else: "off"))
+  $ recentJson()
 
 # ---- File operations -------------------------------------------------------
 
@@ -827,6 +1072,7 @@ proc doOpen(text: string): tuple[opened: bool, content, title: string] =
     errorDialog("Open failed", r.error)
     return (false, "", "")
   setCurrentFile(path)
+  navRecord(path)
   logLine("opened " & path)
   (true, r.value, docName())
 
@@ -889,17 +1135,21 @@ proc guardUnsaved(dirty: bool, text: string): bool =
     false
 
 proc jsMenuOpen(id: string; req: JsonNode): string =
-  ## menuOpen(dirty, text) -> {opened, text, title}
+  ## menuOpen(dirty, text) -> {opened, text, title, canBack, canForward}
   let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
   let text = if req.len > 1: req[1].getStr() else: ""
   if not guardUnsaved(dirty, text):
     return $ %*{"opened": false}
   let r = doOpen(text)
-  $ %*{"opened": r.opened, "text": r.content, "title": r.title}
+  var res = %*{"opened": r.opened, "text": r.content, "title": r.title}
+  for k, v in navJson(): res[k] = v
+  $ res
 
 proc jsMenuNew(id: string; req: JsonNode): string =
   ## menuNew(dirty, text) -> {ok, title}. Guards unsaved changes, then starts a
-  ## fresh empty document and forgets the current file path.
+  ## fresh empty document and forgets the current file path. The navigation
+  ## chain is left as it is: a blank document is not a place you can return to,
+  ## so back still means "the last file I was reading".
   let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
   let text = if req.len > 1: req[1].getStr() else: ""
   if not guardUnsaved(dirty, text):
@@ -908,9 +1158,59 @@ proc jsMenuNew(id: string; req: JsonNode): string =
   logLine("new document")
   $ %*{"ok": true, "title": docName()}
 
+proc spawnNewWindow(): tuple[ok: bool, error: string] =
+  ## Start a second copy of the application, so something else can be read
+  ## without putting the current document away. The child is detached and gets
+  ## this window's own streams, so closing this window leaves it running and its
+  ## log lines still go where the first one's went.
+  var exe = ""
+  try:
+    exe = getAppFilename()
+  except CatchableError as e:
+    return (false, "could not find the application's own program file: " & e.msg)
+  reapSpawnedChildren()
+  try:
+    let p = startProcess(exe, args = launchFlags,
+                         options = {poDaemon, poParentStreams})
+    spawnedChildren.add(p)
+    (true, "")
+  except CatchableError as e:
+    (false, e.msg)
+
+proc jsNewWindow(id: string; req: JsonNode): string =
+  ## newWindow() -> {ok}. Ctrl+Shift+N: another instance of the app, with its own
+  ## empty document.
+  let r = spawnNewWindow()
+  if r.ok:
+    logLine("opened a new window")
+  else:
+    logLine("could not open a new window: " & r.error)
+    errorDialog("New window failed",
+      "A second ZMarkdown window could not be started:\n" & r.error)
+  $ %*{"ok": r.ok}
+
+proc openFileInto(path: string): tuple[opened: bool, text, title: string] =
+  ## Read a file and make it the open document, recording it in the navigation
+  ## chain and the recent list. The unsaved-changes guard is the caller's, since
+  ## only the caller knows what is in the editor.
+  let r = readTextFile(path)
+  if not r.ok:
+    logLine("open failed (" & path & "): " & r.error)
+    errorDialog("Open failed", r.error)
+    return (false, "", "")
+  setCurrentFile(path)
+  navRecord(path)
+  logLine("opened " & path)
+  (true, r.value, docName())
+
+proc openedJson(r: tuple[opened: bool, text, title: string]): JsonNode =
+  result = %*{"opened": r.opened, "text": r.text, "title": r.title}
+  for k, v in navJson(): result[k] = v
+
 proc jsOpenPath(id: string; req: JsonNode): string =
-  ## openPath(dirty, currentText, path) -> {opened, text, title}. Opens a specific
-  ## file (from a drag-and-drop) through the same guard and read path as Open.
+  ## openPath(dirty, currentText, path) -> {opened, text, title, canBack,
+  ## canForward}. Opens a specific file (a drag-and-drop, a row of the recent
+  ## files list) through the same guard and read path as Open.
   let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
   let curText = if req.len > 1: req[1].getStr() else: ""
   let path = if req.len > 2 and req[2].kind == JString: req[2].getStr() else: ""
@@ -918,14 +1218,209 @@ proc jsOpenPath(id: string; req: JsonNode): string =
     return $ %*{"opened": false}
   if not guardUnsaved(dirty, curText):
     return $ %*{"opened": false}
-  let r = readTextFile(path)
-  if not r.ok:
-    logLine("open failed (" & path & "): " & r.error)
-    errorDialog("Open failed", r.error)
+  $ openedJson(openFileInto(path))
+
+# ---- Following a link in the preview ---------------------------------------
+
+const LinkTextMaxBytes = 16 * 1024 * 1024
+  ## Beyond this a linked file is handed to the desktop rather than loaded into
+  ## the editor. Nothing anyone edits by hand is this big, and a stray link to a
+  ## disk image should not try to become a document.
+
+const ViewableExts = [
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "apng", "tif",
+  "tiff", "heic", "heif", "jxl", "svg", "svgz",
+  "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp",
+  "epub", "mobi", "djvu",
+  "mp3", "wav", "flac", "ogg", "oga", "opus", "m4a", "aac",
+  "mp4", "m4v", "mkv", "webm", "avi", "mov", "wmv",
+  "zip", "gz", "bz2", "xz", "zst", "7z", "rar", "tar", "tgz",
+  "woff", "woff2", "ttf", "otf",
+]
+  ## Extensions that mean "this is for another program to show you". Everything
+  ## else is treated as text worth opening here, so a link to `LICENSE`,
+  ## `Makefile`, or `notes` lands in the editor rather than bouncing off to the
+  ## desktop.
+
+const ProgramExts = [
+  "exe", "com", "scr", "msi", "msix", "bat", "cmd", "ps1", "vbs", "js", "jse",
+  "wsf", "lnk", "appimage", "run", "app", "dll", "so", "dylib", "jar", "class",
+  "pyc", "wasm", "bin", "elf", "deb", "rpm", "pkg", "dmg", "iso", "img",
+  "desktop", "reg",
+]
+  ## Extensions that could get something *run* rather than shown. A click on a
+  ## link in somebody else's document must never be able to start a program, so
+  ## these are refused outright instead of being handed to the desktop - which
+  ## for several of them (a `.jar`, a `.desktop`, an `.exe`) means executing it.
+
+proc looksBinary(path: string): bool =
+  ## Whether a file has a NUL byte near its start, the oldest and still the most
+  ## reliable "this is not text" test. An unreadable file is not called binary:
+  ## letting it through gets the real error reported by the read that follows.
+  try:
+    let f = open(path, fmRead)
+    defer: f.close()
+    var buf = newString(8192)
+    let n = f.readBuffer(addr buf[0], buf.len)
+    for i in 0 ..< n:
+      if buf[i] == '\0': return true
+  except CatchableError:
+    discard
+  false
+
+proc openWithDesktop(target: string): bool =
+  ## Hand a file, folder, or web address to whatever the desktop opens it with.
+  ## Returns false only when the attempt itself could not be made.
+  ##
+  ## On Linux this spawns the opener rather than calling
+  ## `browsers.openDefaultBrowser`, which waits for it: `xdg-open` runs the
+  ## handler in the foreground when it cannot identify the desktop, and waiting
+  ## on that would freeze the editor for as long as the viewer stayed open.
+  when defined(linux):
+    try:
+      let p = startProcess("xdg-open", args = [target],
+                           options = {poUsePath, poDaemon, poParentStreams})
+      spawnedChildren.add(p)
+      logLine("handed " & target & " to the desktop")
+      return true
+    except CatchableError as e:
+      vlog("xdg-open could not be started (" & e.msg & "); falling back")
+  try:
+    openDefaultBrowser(target)
+    logLine("handed " & target & " to the desktop")
+    true
+  except CatchableError as e:
+    logLine("could not open " & target & " externally: " & e.msg)
+    false
+
+func linkPathOf(href: string): string =
+  ## The filesystem part of a link target: everything before a `#fragment` or a
+  ## `?query`, which belong to the URL and not to the file's name.
+  result = href
+  let hash = result.find('#')
+  if hash >= 0: result = result[0 ..< hash]
+  let q = result.find('?')
+  if q >= 0: result = result[0 ..< q]
+
+proc jsOpenLink(id: string; req: JsonNode): string =
+  ## openLink(dirty, currentText, href) -> {kind, opened, text, title, canBack,
+  ## canForward}. A link clicked in the rendered preview.
+  ##
+  ## `kind` is "external" when it went to the desktop, "opened" when the linked
+  ## document is now the open one, and "none" when nothing happened. A relative
+  ## link resolves against the folder the current document lives in, which is
+  ## what makes a repository's README reach the files it points at.
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let curText = if req.len > 1: req[1].getStr() else: ""
+  let href = if req.len > 2 and req[2].kind == JString: req[2].getStr().strip() else: ""
+  if href.len == 0:
+    return $ %*{"kind": "none"}
+
+  let scheme = schemeOf(href)
+  if scheme notin ["", "file"]:
+    # Anything with a scheme of its own belongs to another program - but only
+    # the ones a document legitimately links to, so a rendered `javascript:` or
+    # some unknown handler cannot be talked into running.
+    if scheme in ["http", "https", "mailto", "ftp", "ftps"]:
+      discard openWithDesktop(href)
+      return $ %*{"kind": "external"}
+    logLine("ignoring a link with an unsupported scheme: " & scheme & ":")
+    return $ %*{"kind": "none"}
+
+  let target = resolvePath(linkPathOf(href), docBaseDir())
+  if target.len == 0:
+    return $ %*{"kind": "none"}
+
+  if dirExists(target):
+    discard openWithDesktop(target)
+    return $ %*{"kind": "external"}
+  if not fileExists(target):
+    logLine("link target does not exist: " & target)
+    # A very common mistake is `[Site](example.com)`, which markdown reads as a
+    # file beside the document. Say so rather than only naming a path the reader
+    # never wrote.
+    let looksLikeHost = '/' notin href and '\\' notin href and
+                        '.' in linkPathOf(href) and ' ' notin href
+    errorDialog("Cannot follow that link",
+      "This link points at a file that is not there:\n" & target &
+      (if looksLikeHost:
+         "\n\nIf a web address was meant, the link needs its https:// prefix."
+       else: ""))
+    return $ %*{"kind": "none"}
+
+  let ext = target.splitFile().ext.strip(chars = {'.'}).toLowerAscii()
+
+  # A program, an installer, a disk image. Handing one to the desktop is how a
+  # link in a document someone else wrote would get it *run*, so refuse: this is
+  # a markdown reader, and no click in it should start anything.
+  if ext in ProgramExts:
+    logLine("refused to open a program from a link: " & target)
+    errorDialog("Cannot follow that link",
+      "This link points at a program or installer, and ZMarkdown will not " &
+      "start one:\n" & target &
+      "\n\nOpen it from your file manager if that is really what you want.")
+    return $ %*{"kind": "none"}
+
+  # A picture, an archive, a PDF: the desktop knows what to do with it, and the
+  # editor does not.
+  var forDesktop = ext in ViewableExts
+  if not forDesktop:
+    # Not a name anything recognizes. If it is not text either, there is nothing
+    # useful to do with it and nothing safe to guess, so say so and stop.
+    let stamp = fileStamp(target)
+    if stamp.size > LinkTextMaxBytes or looksBinary(target):
+      logLine("link target is not a text document: " & target)
+      errorDialog("Cannot follow that link",
+        "This link points at a file that is not text, and nothing here says " &
+        "what would display it:\n" & target)
+      return $ %*{"kind": "none"}
+  if forDesktop:
+    discard openWithDesktop(target)
+    return $ %*{"kind": "external"}
+
+  if not guardUnsaved(dirty, curText):
+    return $ %*{"kind": "none"}
+  let r = openFileInto(target)
+  if not r.opened:
+    return $ %*{"kind": "none"}
+  var res = openedJson(r)
+  res["kind"] = %"opened"
+  $ res
+
+# ---- Walking the navigation chain ------------------------------------------
+
+proc navStep(dirty: bool; curText: string; forward: bool): string =
+  ## Back or forward one document. The chain only moves once the file has
+  ## actually been read: a document that has since been deleted reports the
+  ## failure and leaves you where you are, with the chain intact.
+  let target = if forward: app.nav.forwardTarget() else: app.nav.backTarget()
+  if target.len == 0:
     return $ %*{"opened": false}
-  setCurrentFile(path)
-  logLine("opened " & path)
-  $ %*{"opened": true, "text": r.value, "title": docName()}
+  if not guardUnsaved(dirty, curText):
+    return $ %*{"opened": false}
+  let r = readTextFile(target)
+  if not r.ok:
+    logLine("history: could not open " & target & ": " & r.error)
+    errorDialog("Cannot go " & (if forward: "forward" else: "back"), r.error)
+    return $ %*{"opened": false}
+  if forward: app.nav.goForward() else: app.nav.goBack()
+  setCurrentFile(target, remember = false)
+  logLine((if forward: "forward to " else: "back to ") & target)
+  var res = %*{"opened": true, "text": r.value, "title": docName()}
+  for k, v in navJson(): res[k] = v
+  $ res
+
+proc jsNavBack(id: string; req: JsonNode): string =
+  ## navBack(dirty, currentText) -> {opened, text, title, canBack, canForward}
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let curText = if req.len > 1: req[1].getStr() else: ""
+  navStep(dirty, curText, forward = false)
+
+proc jsNavForward(id: string; req: JsonNode): string =
+  ## navForward(dirty, currentText) -> {opened, text, title, canBack, canForward}
+  let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let curText = if req.len > 1: req[1].getStr() else: ""
+  navStep(dirty, curText, forward = true)
 
 proc jsLoadDropped(id: string; req: JsonNode): string =
   ## loadDropped(dirty, currentText, name) -> {ok, title}. Used when a dropped
@@ -941,48 +1436,59 @@ proc jsLoadDropped(id: string; req: JsonNode): string =
   logLine("loaded dropped content" & (if name.len > 0: " (" & name & ")" else: ""))
   $ %*{"ok": true, "title": (if name.len > 0: name else: "Untitled")}
 
-proc jsOpenExternal(id: string; req: JsonNode): string =
-  ## openExternal(url). Opens an http(s) URL in the system browser so a link in
-  ## the preview does not navigate the app's own webview away.
-  try:
-    if req.len > 0 and req[0].kind == JString:
-      let url = req[0].getStr()
-      if url.startsWith("http://") or url.startsWith("https://"):
-        openDefaultBrowser(url)
-  except CatchableError as e:
-    vlog("openExternal failed: " & e.msg)
-  result = "true"
-
 proc jsReloadFile(id: string; req: JsonNode): string =
-  ## reloadFile(dirty) -> {ok, text, title}. F5: read the open file from disk
-  ## again, so a document edited elsewhere can be picked up without reopening
-  ## it. Unsaved changes are discarded only after asking.
+  ## reloadFile(dirty, text) -> {ok, text, title}. F5: read the open file from
+  ## disk again, so a document edited elsewhere can be picked up without
+  ## reopening it.
+  ##
+  ## Unsaved changes are never thrown away silently. When there are any, the
+  ## prompt offers all three honest answers: keep them (they are written out
+  ## first, so the refresh finds them there), discard them for what is on disk,
+  ## or call the whole thing off.
   let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
+  let text = if req.len > 1 and req[1].kind == JString: req[1].getStr() else: ""
   if app.currentPath.len == 0:
-    infoDialog("Nothing to reload",
+    infoDialog("Nothing to refresh",
       "This document has never been saved, so there is no file on disk to " &
-      "reload it from.")
+      "refresh it from.")
     return $ %*{"ok": false}
   if not fileExists(app.currentPath):
     let hadFile = app.diskStamp.exists
-    logLine("reload: " & app.currentPath & " is not on disk")
-    infoDialog("Nothing to reload",
+    logLine("refresh: " & app.currentPath & " is not on disk")
+    infoDialog("Nothing to refresh",
       (if hadFile: "This file is no longer on disk:\n"
        else: "This document has not been written to disk yet:\n") &
       app.currentPath)
     return $ %*{"ok": false}
-  if dirty and not confirmPrompt("Reload from disk",
-      "This document has unsaved changes, and reloading will throw them away.\n\n" &
-      "Reload " & docName() & " from disk?"):
-    logLine("reload cancelled (unsaved changes kept)")
+  let startedAt = app.currentPath
+  if dirty:
+    case refreshPrompt(docName())
+    of rcKeep:
+      # Saving is what "keep my version" means; the changed-on-disk prompt is
+      # part of that, since the file has probably moved on underneath.
+      if not doSave(text).saved:
+        logLine("refresh cancelled (the save that would have kept the changes did not happen)")
+        return $ %*{"ok": false}
+    of rcDiscard:
+      logLine("refresh: discarding unsaved changes at the user's request")
+    of rcCancel:
+      logLine("refresh cancelled (unsaved changes kept)")
+      return $ %*{"ok": false}
+  # Save As during the prompt above can have moved the document elsewhere; the
+  # refresh follows it to wherever it now lives, and so does the back/forward
+  # chain, which would otherwise still point at the name it used to have.
+  if app.currentPath != startedAt:
+    navRecord(app.currentPath)
+  if not fileExists(app.currentPath):
+    logLine("refresh: " & app.currentPath & " is not on disk")
     return $ %*{"ok": false}
   let r = readTextFile(app.currentPath)
   if not r.ok:
-    logLine("reload failed (" & app.currentPath & "): " & r.error)
-    errorDialog("Reload failed", r.error)
+    logLine("refresh failed (" & app.currentPath & "): " & r.error)
+    errorDialog("Refresh failed", r.error)
     return $ %*{"ok": false}
   app.diskStamp = fileStamp(app.currentPath)
-  logLine("reloaded " & app.currentPath)
+  logLine("refreshed " & app.currentPath)
   $ %*{"ok": true, "text": r.value, "title": docName()}
 
 proc jsMenuSave(id: string; req: JsonNode): string =
@@ -1006,6 +1512,13 @@ proc jsRequestExit(id: string; req: JsonNode): string =
   persistNow()
   discard app.w.terminate()
   $ %*{"exit": true}
+
+proc jsSetWindowTitle(id: string; req: JsonNode): string =
+  ## setWindowTitle(name). Keeps the native window title in step with the
+  ## document on show, which is the only place a desktop can read it from.
+  let name = if req.len > 0 and req[0].kind == JString: req[0].getStr() else: ""
+  setWindowTitle(name)
+  "true"
 
 proc jsLog(id: string; req: JsonNode): string =
   if req.len > 0 and req[0].kind == JString:
@@ -1038,6 +1551,8 @@ proc jsHistoryReset(id: string; req: JsonNode): string =
 
 proc jsHistoryRecord(id: string; req: JsonNode): string =
   ## historyRecord(text, selStart, selEnd). Commit a new editor state.
+  if req.len < 1:
+    return $ historyStatus()
   try:
     let text = req[0].getStr()
     let a = if req.len > 1: req[1].getInt() else: 0
@@ -1098,12 +1613,21 @@ proc bindAll(w: Webview) =
   discard w.bind("saveSettings", jsSaveSettings)
   discard w.bind("menuOpen", jsMenuOpen)
   discard w.bind("menuNew", jsMenuNew)
+  discard w.bind("newWindow", jsNewWindow)
   discard w.bind("openPath", jsOpenPath)
   discard w.bind("loadDropped", jsLoadDropped)
-  discard w.bind("openExternal", jsOpenExternal)
+  discard w.bind("openLink", jsOpenLink)
+  discard w.bind("navState", jsNavState)
+  discard w.bind("navBack", jsNavBack)
+  discard w.bind("navForward", jsNavForward)
+  discard w.bind("recentState", jsRecentState)
+  discard w.bind("recentRemove", jsRecentRemove)
+  discard w.bind("recentClear", jsRecentClear)
+  discard w.bind("recentSetEnabled", jsRecentSetEnabled)
   discard w.bind("reloadFile", jsReloadFile)
   discard w.bind("menuSave", jsMenuSave)
   discard w.bind("menuSaveAs", jsMenuSaveAs)
+  discard w.bind("setWindowTitle", jsSetWindowTitle)
   discard w.bind("requestExit", jsRequestExit)
   discard w.bind("logMsg", jsLog)
   discard w.bind("historyReset", jsHistoryReset)
@@ -1219,6 +1743,7 @@ proc scriptedDialogAnswer(kind: string): int {.gcsafe.} =
     of "unsaved": 1.cint
     of "confirm": 2.cint
     of "conflict": 3.cint
+    of "refresh": 4.cint
     else: 0.cint
   result = scriptedReplies[scriptedUsed].int
   scriptedUsed += 1
@@ -1232,6 +1757,15 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   logLine("self-test: starting")
   verbose = true
   app.ui = defaultState()
+  # Persistence is exercised for real here (the recent files list is written the
+  # moment a file is opened), so point it at a file of its own: a test run must
+  # never touch the config of whoever is running it.
+  # Named after this process, so two self-tests running at once cannot share
+  # (and then delete) each other's file.
+  app.statePath = getTempDir() /
+    ("zmarkdown-selftest-state-" & $getCurrentProcessId() & ".json")
+  try: removeFile(app.statePath)
+  except CatchableError: discard
 
   # The self-test runs wherever CI puts it (usually xvfb, which has no GPU), so
   # make the same rendering decision a real launch would - honoring the same
@@ -1262,12 +1796,21 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   except CatchableError: discard
   app.startupFile = newPath
 
+  # A pair of documents that link to each other, for following a link in the
+  # preview and then walking back along the chain of what was opened.
+  let linkA = getTempDir() / "zmarkdown-selftest-a.md"
+  let linkB = getTempDir() / "zmarkdown-selftest-b.md"
+  try:
+    writeFile(linkA, "# Doc A\n\nGo to [B](zmarkdown-selftest-b.md).\n")
+    writeFile(linkB, "# Doc B\n\nBack to [A](zmarkdown-selftest-a.md).\n")
+  except CatchableError: discard
+
   # Answers for the prompts the driver is about to provoke, in the order it
-  # provokes them: refuse the first reload over unsaved changes, allow the
-  # second, cancel the first save onto a file that changed underneath, and
+  # provokes them: call off the first refresh over unsaved changes, discard on
+  # the second, cancel the first save onto a file that changed underneath, and
   # overwrite on the second.
-  scriptedReplies[0] = 0  # confirm: no, keep my unsaved changes
-  scriptedReplies[1] = 1  # confirm: yes, reload from disk
+  scriptedReplies[0] = 0  # refresh: cancel, keep my unsaved changes
+  scriptedReplies[1] = 2  # refresh: discard them and take what is on disk
   scriptedReplies[2] = 0  # conflict: cancel the save
   scriptedReplies[3] = 1  # conflict: overwrite
   scriptedCount = 4
@@ -1411,9 +1954,78 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
       # ...and the questions asked were the ones expected, in that order.
       if scriptedUsed != 4:
         failures.add("expected 4 prompts, " & $scriptedUsed & " were asked")
-      elif scriptedAsked[0] != 2 or scriptedAsked[1] != 2 or
+      elif scriptedAsked[0] != 4 or scriptedAsked[1] != 4 or
            scriptedAsked[2] != 3 or scriptedAsked[3] != 3:
-        failures.add("the prompts asked were not reload, reload, conflict, conflict")
+        failures.add("the prompts asked were not refresh, refresh, conflict, conflict")
+      # Following links in the preview, and the chain of documents that leaves.
+      let nav = r{"nav"}
+      if nav == nil or nav.kind != JObject or nav{"error"}.getStr().len > 0:
+        failures.add("link/history self-test did not report" &
+          (if nav != nil and nav{"error"}.getStr().len > 0:
+             ": " & nav{"error"}.getStr() else: ""))
+      else:
+        if nav{"startTitle"}.getStr() != extractFilename(linkA):
+          failures.add("the linked-from document was not opened (title '" &
+            nav{"startTitle"}.getStr() & "')")
+        if nav{"startForward"}.getBool():
+          failures.add("Forward was offered right after opening a document")
+        if not nav{"linkedText"}.getStr().contains("Doc B"):
+          failures.add("clicking a relative link did not open the linked file (editor holds '" &
+            nav{"linkedText"}.getStr() & "')")
+        if not nav{"linkedBack"}.getBool():
+          failures.add("Back was not offered after following a link")
+        if nav{"linkedForward"}.getBool():
+          failures.add("Forward was offered before anything had been gone back from")
+        if not nav{"backText"}.getStr().contains("Doc A"):
+          failures.add("Back did not return to the previous document (editor holds '" &
+            nav{"backText"}.getStr() & "')")
+        if not nav{"backForward"}.getBool():
+          failures.add("Forward was not offered after going back")
+        if not nav{"fwdText"}.getStr().contains("Doc B"):
+          failures.add("Forward did not return to the later document (editor holds '" &
+            nav{"fwdText"}.getStr() & "')")
+        # Opening something new after going back rewrites the tail of the chain.
+        if not nav{"branchBack"}.getBool():
+          failures.add("Back was lost after opening a document from part-way back")
+        if nav{"branchForward"}.getBool():
+          failures.add("the abandoned forward entries survived opening another document")
+        # A heading anchor, which only resolves because headings carry ids.
+        if not nav{"anchorOk"}.getBool():
+          failures.add("a link to a heading in the same document found nothing")
+      # The empty-document watermark, and the recent files list.
+      let hint = r{"hint"}
+      if hint == nil or hint.kind != JObject:
+        failures.add("empty-document self-test did not report")
+      else:
+        if hint{"emptyPreview"}.getBool() != true:
+          failures.add("the empty-file watermark was not shown in Preview")
+        if hint{"emptySplit"}.getBool() != false:
+          failures.add("the empty-file watermark was shown in Split, where the editor is visible")
+        if hint{"filledPreview"}.getBool() != false:
+          failures.add("the empty-file watermark was shown over a document with text in it")
+      let rec = r{"recent"}
+      if rec == nil or rec.kind != JObject or rec{"error"}.getStr().len > 0:
+        failures.add("recent files self-test did not report" &
+          (if rec != nil and rec{"error"}.getStr().len > 0:
+             ": " & rec{"error"}.getStr() else: ""))
+      else:
+        let listed = rec{"paths"}
+        if listed == nil or listed.kind != JArray or listed.len == 0:
+          failures.add("no recently opened files were listed in the menu")
+        else:
+          if listed[0].getStr() != linkA:
+            failures.add("the most recently opened file was not first in the list (got '" &
+              listed[0].getStr() & "')")
+          if rec{"names"}[0].getStr() != extractFilename(linkA):
+            failures.add("a recent file row did not show the file's own name")
+          if not rec{"titles"}[0].getStr().contains(linkA):
+            failures.add("a recent file row did not carry its full path for the tooltip")
+        if rec{"afterForget"}.getBool():
+          failures.add("a forgotten file was still in the recent files list")
+        if rec{"afterClear"}.getInt() != 0:
+          failures.add("clearing left " & $rec{"afterClear"}.getInt() & " recent files behind")
+        if not rec{"hiddenWhenOff"}.getBool():
+          failures.add("the recent files list was still shown after tracking was switched off")
       # Find and replace, driven through the real bar.
       let f = r{"find"}
       if f == nil or f.kind != JObject:
@@ -1626,16 +2238,82 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           fr.closed = closed.editorMarks === 0 && closed.previewMarks === 0;
           window.__zm.setView("split");
         } catch (e) { fr.error = String(e); }
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup, disk: disk });
+        // Following a link in the preview, and walking the chain of documents
+        // that opening things leaves behind. Driven through the real rendered
+        // anchor and the real toolbar arrows.
+        var nav = {};
+        try {
+          window.__zm.setView("preview");
+          var oa = await window.openPath(false, "", window.__zmLinkA);
+          if (oa && oa.opened) await window.__zm.loadOpened(oa);
+          nav.startTitle = window.__zm.getTitle();
+          nav.startForward = window.__zm.navState().canForward;
+          var clicked = await window.__zm.clickLink(0);   // the [B] link in A
+          nav.linkedText = clicked.text;
+          nav.linkedBack = clicked.canBack;
+          nav.linkedForward = clicked.canForward;
+          var b1 = await window.__zm.navGo(false);
+          nav.backText = b1.text;
+          nav.backForward = b1.canForward;
+          var f1 = await window.__zm.navGo(true);
+          nav.fwdText = f1.text;
+          // Step back, then open something else: the abandoned forward entries
+          // must not survive it.
+          await window.__zm.navGo(false);
+          var ob = await window.openPath(false, "", window.__zmLinkB);
+          if (ob && ob.opened) await window.__zm.loadOpened(ob);
+          nav.branchBack = window.__zm.navState().canBack;
+          nav.branchForward = window.__zm.navState().canForward;
+          // A link to a heading in this same document scrolls rather than
+          // opening anything, which needs the heading to have an id.
+          await window.__zm.setEditor("# A Heading Here\n\n[jump](#a-heading-here)\n");
+          nav.anchorOk = window.__zm.getRenderedHtml().indexOf('id="a-heading-here"') !== -1 &&
+                         window.__zm.gotoAnchor("a-heading-here") === true &&
+                         window.__zm.gotoAnchor("no-such-heading") === false;
+        } catch (e) { nav.error = String(e); }
+        // The watermark over an empty document in Preview.
+        var hint = {};
+        try {
+          await window.__zm.setEditor("   \n\n  \n");
+          window.__zm.setView("preview");
+          hint.emptyPreview = window.__zm.emptyHintShown();
+          window.__zm.setView("split");
+          hint.emptySplit = window.__zm.emptyHintShown();
+          window.__zm.setView("preview");
+          await window.__zm.setEditor("# Not empty\n");
+          hint.filledPreview = window.__zm.emptyHintShown();
+        } catch (e) { hint.error = String(e); }
+        // The recent files list: what the menu shows, forgetting one row,
+        // clearing the lot, and hiding it when the tracking is switched off.
+        var recent = {};
+        try {
+          var oa2 = await window.openPath(false, "", window.__zmLinkA);
+          if (oa2 && oa2.opened) await window.__zm.loadOpened(oa2);
+          var menu = await window.__zm.recentMenu();
+          recent.paths = menu.paths;
+          recent.names = menu.names;
+          recent.titles = menu.titles;
+          var afterForget = await window.__zm.recentForget(window.__zmLinkB);
+          recent.afterForget =
+            (afterForget.files || []).some(function (f) { return f.path === window.__zmLinkB; });
+          var off = await window.recentSetEnabled(false);
+          recent.hiddenWhenOff = (off.files || []).length === 0 && off.storedCount > 0;
+          await window.recentSetEnabled(true);
+          var cleared = await window.recentClear();
+          recent.afterClear = (cleared.files || []).length;
+        } catch (e) { recent.error = String(e); }
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup, disk: disk, nav: nav, hint: hint, recent: recent });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' }, disk: { error: 'driver aborted' } });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' }, disk: { error: 'driver aborted' }, nav: { error: 'driver aborted' }, hint: { error: 'driver aborted' }, recent: { error: 'driver aborted' } });
       }
     });
   })();
   """
   let dropInit = "window.__zmDropPath = " & $(%dropPath) & ";" &
-                 "window.__zmImgRel = " & $(%imgName) & ";"
+                 "window.__zmImgRel = " & $(%imgName) & ";" &
+                 "window.__zmLinkA = " & $(%linkA) & ";" &
+                 "window.__zmLinkB = " & $(%linkB) & ";"
   discard w.init(dropInit.cstring)
   discard w.init(driver)
 
@@ -1653,7 +2331,7 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   if not wdDone.load():
     failures.add("timed out waiting for UI report")
 
-  for leftover in [imgPath, newPath]:
+  for leftover in [imgPath, newPath, dropPath, linkA, linkB, app.statePath]:
     try: removeFile(leftover)
     except CatchableError: discard
 
@@ -1703,9 +2381,9 @@ proc main() =
     case arg
     of "--self-test": wantSelfTest = true
     of "--probe-gl": wantProbeMode = true  # internal: the isolated GL probe helper
-    of "--no-gpu": forceCpu = true
-    of "--gpu": forceGpu = true
-    of "--verbose", "-v": verbose = true
+    of "--no-gpu": forceCpu = true; launchFlags.add(arg)
+    of "--gpu": forceGpu = true; launchFlags.add(arg)
+    of "--verbose", "-v": verbose = true; launchFlags.add("--verbose")
     of "--version": printVersion(); return
     of "--help", "-h": printHelp(); return
     else:
@@ -1755,7 +2433,7 @@ proc main() =
       if cachedVerdict == "":
         if mode in ["gpu", "cpu"]:  # cache only a real verdict
           app.ui.renderMode = mode
-          discard saveState(app.ui)
+          discard saveState(app.ui, appStatePath())
       else:
         # This run used the cache; re-check in the background (started after
         # the window is up, so startup does not compete with it).
@@ -1795,7 +2473,9 @@ proc main() =
         # Exit came through the menu, which persisted before the re-probe was
         # done; fold the late verdict into the already-written state.
         foldProbeVerdict()
-        discard saveState(app.ui)
+        var disk = loadState(appStatePath())
+        disk.renderMode = app.ui.renderMode
+        discard saveState(disk, appStatePath())
   if not app.exiting:
     # Window closed via the window manager rather than the Exit menu; still
     # persist state so the size/view are remembered.

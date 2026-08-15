@@ -23,6 +23,11 @@ Text only: a plain markdown editor.
 
 ![ZMarkdown editor](screenshots/editor.png)
 
+The File menu, with the files you opened most recently listed by name and their full path
+on hover.
+
+![The ZMarkdown File menu](screenshots/menu.png)
+
 ## Get a prebuilt binary
 
 You do not need to build anything. Prebuilt binaries are published on the project's GitHub
@@ -158,15 +163,40 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
 - **Undo / redo** with the toolbar buttons or **Ctrl+Z** and **Ctrl+Y** (**Ctrl+Shift+Z**
   also redoes). History is bounded by memory (about 100 MB), not by a step count: only when
   that is exceeded are the oldest edits dropped.
-- **Files.** **Ctrl+N** new, **Ctrl+O** open, **Ctrl+S** save, **Ctrl+Shift+S** save as,
-  **F5** reload from disk. The File menu has the same actions plus Settings and Exit. If you
-  have unsaved changes when starting a new document, opening a file, or exiting, a prompt
-  lets you save, discard, or cancel.
-- **Reload from disk (F5).** Re-reads the open file, so a document that changed underneath
-  you — a branch checkout, another editor, a script that wrote it — can be picked up without
+- **Files.** **Ctrl+N** new, **Ctrl+Shift+N** new window, **Ctrl+O** open, **Ctrl+S** save,
+  **Ctrl+Shift+S** save as, **F5** refresh. The File menu has the same actions plus the
+  recent files, Settings, and Exit. If you have unsaved changes when starting a new document,
+  opening a file, or exiting, a prompt lets you save, discard, or cancel.
+- **Refresh (F5).** Re-reads the open file, so a document that changed underneath you — a
+  branch checkout, another editor, a script that wrote it — can be picked up without
   reopening it. Your place in the text is kept rather than jumping back to the top. If the
-  document has unsaved changes, F5 asks before throwing them away. **Ctrl+R** does the same
-  thing (and is caught for that reason: left alone it would reload the app's own page).
+  document has unsaved changes, refreshing asks first and gives you all three answers: keep
+  your changes (they are saved first, so the refresh finds them there), discard them for
+  what is on disk, or call it off. **Ctrl+R** does the same thing (and is caught for that
+  reason: left alone it would reload the app's own page).
+- **New window (Ctrl+Shift+N).** Starts a second copy of ZMarkdown with its own empty
+  document, for reading something else without putting the current document away. The two
+  windows are independent, and closing one leaves the other running. The window title names
+  the open document ("ZMarkdown - notes.md"), so a taskbar of them says which is which.
+- **Links in the preview.** Clicking a link does what the link means. `http://` and
+  `https://` addresses (and `mailto:`) go to whatever your desktop opens them with. A link to
+  another file — `[the guide](docs/guide.md)`, the kind a repository README is full of —
+  opens that file here, resolved against the folder the current document lives in; absolute
+  paths, `file://` URLs, and `~/` work too. A link to a picture, a PDF, an archive, or a
+  folder is handed to the desktop instead, since the editor has nothing useful to do with
+  it. A link to a heading in the same document (`[see below](#build-from-source)`) scrolls
+  there. Links to programs and installers are refused rather than opened: clicking a link
+  in a document somebody else wrote should never be able to start something.
+- **Back and forward.** The two arrows beside the view buttons walk the documents you have
+  opened this session, the way a browser's do — so following a link into another file and
+  then coming back is two clicks, not a trip through the open dialog. **Alt+Left** and
+  **Alt+Right** do the same. Opening something new from part-way back drops what was ahead
+  of you, again like a browser. The chain lasts as long as the window does; it is not saved
+  between runs.
+- **Recent files.** The File menu lists the files you opened most recently, newest first,
+  by name, with the full path when you hover one; anything past the first ten sits behind
+  **More recent files**. Hovering a file and pressing **Delete** forgets that one. File >
+  Settings has a switch to stop tracking them altogether and a button to empty the list.
 - **When a file changes underneath you.** Saving never quietly overwrites a file that
   something else has written since you opened it. If that has happened, ZMarkdown says so
   and offers three ways out: overwrite it with your version, save yours to a different file,
@@ -193,7 +223,11 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   like a web browser: a round marker follows the cursor and the pane scrolls by how far you
   move from the click point. Click again, press a key, or use the wheel to stop.
 - **Settings.** File > Settings sets the font, font color, and background color, applied to
-  both panes; your choices persist between runs.
+  both panes, and controls whether recently opened files are remembered. Your choices
+  persist between runs.
+- **An empty document in Preview.** A blank preview pane looks exactly like a blank editor,
+  and typing into it goes nowhere. When the open document is empty and Preview is all that
+  is showing, a watermark says so; clicking it switches to Text.
 - **Virtual machines and machines without 3D acceleration** (Linux). At startup the app
   checks whether the display has working 3D acceleration. Where it does not — a VM without
   guest 3D is the common case — the preview engine is told to render on the CPU instead of
@@ -214,11 +248,20 @@ The app remembers a little state between runs, stored as JSON:
 
 It restores the window size and whether the window was maximized (the size is clamped to
 your current screen and never below a usable minimum), the view mode, the divider
-position, your File > Settings choices, and the cached graphics verdict described under
-"Using it". It does not reopen your previous file: every launch starts with a fresh, empty
-document. The app follows your system light or dark
+position, your File > Settings choices, the list of recently opened files, and the cached
+graphics verdict described under "Using it". It does not reopen your previous file: every
+launch starts with a fresh, empty document. The app follows your system light or dark
 preference automatically. If the state file is missing or unreadable, the app starts with
 sensible defaults; if the config directory cannot be written, it simply skips saving state.
+
+Preferences are written the moment you change them rather than only at exit, and each write
+is merged onto what is already in the file. So the view mode a new window opens in is
+whichever one you last picked, even with several windows open at once and whatever order
+you close them in.
+
+To keep no record of the files you open, turn off "Remember recently opened files" in
+File > Settings. That stops new files being added and hides the list; the button beside it
+empties what was remembered before.
 
 ## Known limitations
 
@@ -229,8 +272,14 @@ sensible defaults; if the config directory cannot be written, it simply skips sa
 - Native dialogs require `kdialog` or `zenity` to be installed. Without either, open, save,
   and confirmation dialogs cannot be shown; the app logs this and keeps running rather than
   failing, but those actions will not work until you install one of them.
-- The markdown renderer supports CommonMark plus GitHub tables and strikethrough, and turns
-  task list markers into read-only checkboxes. Bare-URL autolinking is not rendered.
+- The markdown renderer supports CommonMark plus GitHub tables and strikethrough, turns
+  task list markers into read-only checkboxes, and gives every heading the anchor its own
+  table of contents links to. Bare-URL autolinking is not rendered.
+- Following a link to another document replaces what is in the window, exactly as opening
+  that file would: ZMarkdown edits one document at a time and has no tabs. Unsaved changes
+  are guarded first, as they are everywhere else.
+- Back and forward walk only the files opened in the running window. A new empty document
+  is not a place the arrows can return to, and the chain is gone when the window closes.
 - Find and replace matches literal text only; there is no regular-expression mode. In a
   document with an unusually large number of matches (over ten thousand), the count is
   still exact but only the first ten thousand are highlighted and reachable with Enter.

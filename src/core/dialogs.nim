@@ -1,5 +1,6 @@
 ## Thin wrappers over tinyfiledialogs for the native dialogs the app needs:
-## open, save-as, an unsaved-changes prompt, and an error box.
+## open, save-as, an unsaved-changes prompt, a changed-on-disk prompt, a refresh
+## prompt, and information and error boxes.
 ##
 ## On Linux tinyfiledialogs shells out to a native helper (kdialog on KDE, zenity
 ## elsewhere). If none is present the underlying C library degrades on its own,
@@ -21,6 +22,12 @@ type
     ccSaveAs    ## put this document somewhere else and leave that file alone
     ccCancel    ## do nothing
 
+  RefreshChoice* = enum
+    ## Result of the prompt shown when a refresh would throw away unsaved work.
+    rcKeep      ## save what is in the editor first, and carry on with it
+    rcDiscard   ## drop the unsaved changes and take what is on disk
+    rcCancel    ## do not refresh at all
+
 func savePromptOf*(code: int): SavePrompt =
   ## Map a yes/no/cancel box's answer onto the unsaved-changes choices.
   case code
@@ -35,6 +42,13 @@ func conflictChoiceOf*(code: int): ConflictChoice =
   of 2: ccSaveAs
   else: ccCancel
 
+func refreshChoiceOf*(code: int): RefreshChoice =
+  ## Map a yes/no/cancel box's answer onto the refresh choices.
+  case code
+  of 1: rcKeep
+  of 2: rcDiscard
+  else: rcCancel
+
 var logSink: proc (msg: string) {.gcsafe.} = nil
 var answerHook: proc (kind: string): int {.gcsafe.} = nil
 
@@ -42,8 +56,8 @@ proc setDialogAnswerHook*(hook: proc (kind: string): int {.gcsafe.}) =
   ## Answer prompts from code rather than from a person. Only the headless
   ## self-test sets this: there is nobody there to click the buttons, and the
   ## flows behind these prompts are worth testing for real. `kind` is one of
-  ## "unsaved", "confirm", or "conflict"; a negative answer (or no hook) means
-  ## "ask a human", which is what every normal run does.
+  ## "unsaved", "confirm", "conflict", or "refresh"; a negative answer (or no
+  ## hook) means "ask a human", which is what every normal run does.
   answerHook = hook
 
 proc scriptedAnswer(kind: string): int =
@@ -162,6 +176,27 @@ proc diskConflictPrompt*(name: string, gone: bool): ConflictChoice =
   except CatchableError as e:
     logIt("changed-on-disk prompt failed: " & e.msg)
     ccCancel
+
+proc refreshPrompt*(name: string): RefreshChoice =
+  ## Ask what a refresh should do about unsaved changes: keep them (by saving
+  ## them first), throw them away for whatever is on disk, or leave everything
+  ## alone. Defaults to Cancel, so a dialog that cannot be shown never costs
+  ## anyone their work.
+  let scripted = scriptedAnswer("refresh")
+  if scripted >= 0:
+    return refreshChoiceOf(scripted)
+  let message = name & " has unsaved changes, and refreshing replaces them with " &
+    "what is on disk.\n\n" &
+    "Yes: keep my changes - save them first, then refresh\n" &
+    "No: discard my changes and load what is on disk\n" &
+    "Cancel: do not refresh"
+  try:
+    refreshChoiceOf(tfd.tinyfd_messageBox(
+      "Refresh".cstring, sanitizeForDialog(message).cstring,
+      "yesnocancel".cstring, "warning".cstring, 0).int)
+  except CatchableError as e:
+    logIt("refresh prompt failed: " & e.msg)
+    rcCancel
 
 proc infoDialog*(title, message: string) =
   ## Show a native information box for something that is worth saying but is not

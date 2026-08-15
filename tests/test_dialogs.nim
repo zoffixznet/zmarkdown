@@ -24,3 +24,13 @@ suite "changed-on-disk answers":
   test "an unexpected answer never overwrites":
     for code in [-1, 3, 99]:
       check conflictChoiceOf(code) == ccCancel
+
+suite "refresh-over-unsaved-changes answers":
+  test "yes keeps the changes, no takes what is on disk, anything else cancels":
+    check refreshChoiceOf(1) == rcKeep
+    check refreshChoiceOf(2) == rcDiscard
+    check refreshChoiceOf(0) == rcCancel
+
+  test "an unexpected answer never throws the changes away":
+    for code in [-1, 3, 99]:
+      check refreshChoiceOf(code) == rcCancel
