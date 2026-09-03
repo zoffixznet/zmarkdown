@@ -67,6 +67,14 @@
 
   let splitRatio = 0.5;
   let currentView = "split";
+  // What Tab puts into the document in front of you. `indentPref` is the
+  // setting ("auto", "tab", "space"); `indentKind` is what that works out to for
+  // this document, which the toolbar button can flip without changing the
+  // setting. It is deliberately not remembered per file: it is a property of the
+  // document's own text, so the next one it is worked out again from scratch.
+  let indentPref = "auto";
+  let indentKind = "tab";
+  let tabWidth = 4;
   let dirty = false;
   let renderTimer = null;
   let lastRenderedHtml = "";
@@ -293,7 +301,7 @@
     try {
       const res = await window.openLink(dirty, editor.value, href);
       if (res && res.kind === "opened") {
-        await loadIntoEditor(res.text, res.title);
+        await loadIntoEditor(res.text, res.title, { view: res.view });
       }
       if (res) applyNavState(res);
     } catch (e) { log("openLink failed: " + e); }
@@ -359,7 +367,7 @@
     try {
       const res = await (forward ? window.navForward(dirty, editor.value)
                                  : window.navBack(dirty, editor.value));
-      if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      if (res && res.opened) await loadIntoEditor(res.text, res.title, { view: res.view });
       applyNavState(res && res.opened ? res : await window.navState());
     } catch (e) { log("history navigation failed: " + e); }
   }
@@ -388,7 +396,18 @@
 
   /* ---- Editing shortcuts ----------------------------------------------- */
 
-  async function runEdit(kind) {
+  // Edits queue behind one another. Each one reads the editor, hands the text to
+  // Nim, and writes the answer back; two of them in flight at once would both
+  // start from the same text and the second would throw away the first. That is
+  // no risk for a Ctrl+B, but Tab is a typing key and repeats when held.
+  let editQueue = Promise.resolve();
+
+  function runEdit(kind) {
+    editQueue = editQueue.catch(() => {}).then(() => applyEditNow(kind));
+    return editQueue;
+  }
+
+  async function applyEditNow(kind) {
     // Capture the text and selection synchronously, before any await, so nothing
     // can shift them in the async gap.
     const text = editor.value;
@@ -396,7 +415,7 @@
     const e = editor.selectionEnd;
     await commitHistory(); // flush any pending typing so it is its own undo step
     try {
-      const res = await window.applyEdit(kind, text, s, e);
+      const res = await window.applyEdit(kind, text, s, e, indentKind, tabWidth);
       editor.value = res.text;
       editor.selectionStart = res.selStart;
       editor.selectionEnd = res.selEnd;
@@ -409,6 +428,51 @@
       log("edit " + kind + " failed: " + err);
     }
   }
+
+  /* ---- Indentation ----------------------------------------------------- */
+  // The toolbar button says what Tab will put in, and flips it for the document
+  // in front of you. The setting behind it (and the width) live in Settings; a
+  // flip here is for this document only and is not written anywhere.
+
+  const btnIndent = $("btn-indent");
+
+  function applyTabWidth() {
+    // The editor and the highlight layer behind it must draw a tab at exactly
+    // the same width or every search mark would sit off to one side of its word.
+    document.documentElement.style.setProperty("--tab-size", String(tabWidth));
+    syncHighlightMetrics();
+  }
+
+  function paintIndentToggle() {
+    if (!btnIndent) return;
+    const spaces = indentKind === "space";
+    btnIndent.textContent = spaces ? "Spaces" : "Tabs";
+    btnIndent.setAttribute("aria-pressed", spaces ? "true" : "false");
+    btnIndent.title = spaces
+      ? "Tab inserts " + tabWidth + " spaces (click for a tab)"
+      : "Tab inserts a tab (click for spaces)";
+  }
+
+  // Work out what this document indents with. Nim does the scanning, so there is
+  // one answer to "what does this file use" and the tests can drive it directly.
+  async function refreshIndent(text) {
+    try {
+      const st = await window.indentState(
+        typeof text === "string" ? text : editor.value, indentPref, tabWidth);
+      if (st) {
+        if (typeof st.pref === "string") indentPref = st.pref;
+        if (typeof st.kind === "string") indentKind = st.kind;
+        if (typeof st.width === "number") { tabWidth = st.width; applyTabWidth(); }
+      }
+    } catch (e) { log("indentState failed: " + e); }
+    paintIndentToggle();
+  }
+
+  if (btnIndent) btnIndent.addEventListener("click", () => {
+    indentKind = indentKind === "space" ? "tab" : "space";
+    paintIndentToggle();
+    editor.focus();
+  });
 
   /* ---- Undo / redo ----------------------------------------------------- */
   // History lives in Nim (bounded by memory, not step count). JS captures
@@ -826,7 +890,7 @@
     }
   }
 
-  function onFindViewChanged() {
+  function onFindViewChanged(docReplaced) {
     if (!find.open) return;
     const target = findTargetForView(currentView);
     if (target !== find.target) {
@@ -836,7 +900,7 @@
       updateFindUi(); // enable/disable the replace controls for the new target
     }
     syncHighlightMetrics();
-    refreshFind({ keepIndex: true });
+    refreshFind({ keepIndex: true, select: !docReplaced });
   }
 
   async function doReplaceOne() {
@@ -939,7 +1003,11 @@
 
   /* ---- View modes ------------------------------------------------------ */
 
-  function setView(view, persist) {
+  // `docReplaced` says the document itself is changing under this switch, so
+  // the find bar must repaint its matches without moving the selection: the
+  // caller has just placed the caret at the top of the new document, and the
+  // ordinary "keep your place" behavior would drag it onto a match instead.
+  function setView(view, persist, docReplaced) {
     currentView = view;
     app.setAttribute("data-view", view);
     for (const b of document.querySelectorAll(".viewmodes button")) {
@@ -952,7 +1020,7 @@
     // Catch up on renders skipped while the preview was hidden.
     if (view !== "text" && previewStale) doRender();
     // Which pane the find bar searches follows the view.
-    onFindViewChanged();
+    onFindViewChanged(docReplaced);
     updateEmptyHint();
     if (persist !== false) persist_state();
   }
@@ -1193,7 +1261,7 @@
   async function openRecent(path) {
     try {
       const res = await window.openPath(dirty, editor.value, path);
-      if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      if (res && res.opened) await loadIntoEditor(res.text, res.title, { view: res.view });
       applyNavState(res);
     } catch (e) { log("opening a recent file failed: " + e); }
   }
@@ -1225,6 +1293,10 @@
           editor.value = "";
           setTitle(res.title, false);
           await doRender();
+          // A blank document has no view of its own; Nim hands back the one
+          // last picked by hand rather than leaving the previous file's.
+          if (res.view && res.view !== currentView) setView(res.view, false, true);
+          await refreshIndent("");
           await resetHistory("");
           editor.focus();
           findTextReplaced();
@@ -1233,7 +1305,7 @@
         await window.newWindow();
       } else if (action === "open") {
         const res = await window.menuOpen(dirty, editor.value);
-        if (res && res.opened) await loadIntoEditor(res.text, res.title);
+        if (res && res.opened) await loadIntoEditor(res.text, res.title, { view: res.view });
         applyNavState(res);
       } else if (action === "reload") {
         // Nim asks what to do about unsaved changes and reports what is on disk
@@ -1293,7 +1365,16 @@
     editor.selectionStart = editor.selectionEnd = caret;
     editor.scrollTop = editorScroll;
     setTitle(title, false);
+    // Render before revealing the pane the document belongs in, or switching
+    // into Preview would show the previous document until this finished.
     await doRender();
+    // The view this document was last read in, decided by Nim from the recent
+    // files list. Deliberately not persisted: honoring a document's own view is
+    // not the user choosing one, and it must not become what the next blank
+    // document falls back to.
+    if (opts && opts.view && opts.view !== currentView) setView(opts.view, false, true);
+    // Auto-detect reads the document, so it has to be re-read for this one.
+    await refreshIndent(text);
     if (keep) preview.scrollTop = previewScroll;
     else preview.scrollTop = 0;
     await resetHistory(editor.value);
@@ -1305,7 +1386,7 @@
     log("drop: opening path " + path);
     try {
       const res = await window.openPath(dirty, editor.value, path);
-      if (res && res.opened) await loadIntoEditor(res.text, res.title);
+      if (res && res.opened) await loadIntoEditor(res.text, res.title, { view: res.view });
       applyNavState(res);
     } catch (e) { log("drop openPath failed: " + e); }
   }
@@ -1314,7 +1395,7 @@
       const text = await file.text();
       log("drop: read content of " + (file.name || "?") + " (" + text.length + " chars)");
       const res = await window.loadDropped(dirty, editor.value, file.name || "");
-      if (res && res.ok) await loadIntoEditor(text, res.title);
+      if (res && res.ok) await loadIntoEditor(text, res.title, { view: res.view });
     } catch (e) { log("drop content read failed: " + e); }
   }
 
@@ -1420,6 +1501,43 @@
     }
   });
 
+  // Tab in the editor is a character, not a way out of it: this is where you
+  // write, and a key that indents everywhere else must not be the one key that
+  // jumps to the toolbar instead. Shift+Tab takes one level of indentation back
+  // off. Keyboard-only use still needs a way out, so Escape arms the next Tab to
+  // move focus the way it does everywhere else; any other key disarms it again.
+  let tabLeavesEditor = false;
+
+  editor.addEventListener("keydown", (ev) => {
+    // A modifier pressed on its own is not a change of mind about the escape
+    // hatch: Shift+Tab has to be able to leave too, and its own keydown lands
+    // first.
+    if (ev.key === "Shift" || ev.key === "Control" ||
+        ev.key === "Alt" || ev.key === "Meta") return;
+    if (ev.key === "Escape") {
+      // Escape backs out of whatever is open, innermost first; only when it has
+      // nothing left to close does it mean "let the next Tab out of here". This
+      // handler runs before the window-level one that does the closing, so what
+      // is open here is what Escape is about to be spent on.
+      if (settingsOverlay.hidden && !find.open) tabLeavesEditor = true;
+      return;
+    }
+    if (ev.key !== "Tab") { tabLeavesEditor = false; return; }
+    // Ctrl+Tab belongs to whatever is holding the window; never swallow it.
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (tabLeavesEditor) { tabLeavesEditor = false; return; }
+    // Mid-composition the key is the input method's, not ours.
+    if (ev.isComposing || ev.keyCode === 229) return;
+    ev.preventDefault();
+    runEdit(ev.shiftKey ? "outdent" : "indent");
+  });
+
+  // Anything else that happens is a fresh start. The arm is for the Tab pressed
+  // straight after Escape; one pressed after a click, or after wandering off and
+  // coming back, is somebody indenting again.
+  editor.addEventListener("blur", () => { tabLeavesEditor = false; });
+  editor.addEventListener("mousedown", () => { tabLeavesEditor = false; });
+
   // One handler for every accelerator, wherever focus happens to be. The
   // formatting shortcuts only make sense in the editor; the rest are global.
   document.addEventListener("keydown", (ev) => {
@@ -1474,6 +1592,8 @@
   const setFont = $("set-font");
   const setBg = $("set-bg");
   const setFg = $("set-fg");
+  const setIndent = $("set-indent");
+  const setTabWidth = $("set-tabwidth");
   let fontChoice = "";
   let bgColor = "";
   let textColor = "";
@@ -1505,7 +1625,11 @@
   }
   function applySettings() { applyFont(fontChoice); applyBg(bgColor); applyFg(textColor); }
   function persistSettings() {
-    try { if (window.saveSettings) window.saveSettings(fontChoice, bgColor, textColor); } catch (e) {}
+    try {
+      if (window.saveSettings) {
+        window.saveSettings(fontChoice, bgColor, textColor, indentPref, tabWidth);
+      }
+    } catch (e) {}
   }
   function cssVarHex(name, fallback) {
     return (getComputedStyle(document.documentElement).getPropertyValue(name).trim()) || fallback;
@@ -1527,6 +1651,8 @@
     if (setFont) setFont.value = (fontChoice in FONT_FAMILIES) ? fontChoice : "";
     if (setBg) setBg.value = bgColor || cssVarHex("--paper", "#EDEBE4");
     if (setFg) setFg.value = textColor || cssVarHex("--ink", "#1A1D24");
+    if (setIndent) setIndent.value = indentPref;
+    if (setTabWidth) setTabWidth.value = String(tabWidth);
     settingsOverlay.hidden = false;
     try { paintRecentSetting(await window.recentState()); }
     catch (e) { log("recentState failed: " + e); }
@@ -1551,11 +1677,31 @@
   if (setFg) setFg.addEventListener("input", () => {
     textColor = setFg.value; applyFg(textColor); persistSettings();
   });
-  $("set-reset").addEventListener("click", () => {
-    fontChoice = ""; bgColor = ""; textColor = ""; applySettings(); persistSettings();
+  if (setIndent) setIndent.addEventListener("change", async () => {
+    indentPref = setIndent.value;
+    persistSettings();
+    // The preference has just changed under the open document, so what Tab puts
+    // into it changes now rather than when something else is opened.
+    await refreshIndent();
+  });
+  if (setTabWidth) setTabWidth.addEventListener("input", async () => {
+    const n = parseInt(setTabWidth.value, 10);
+    if (!isFinite(n)) return;             // mid-edit empty box: wait for a number
+    tabWidth = Math.max(1, Math.min(16, n));
+    applyTabWidth();
+    paintIndentToggle();
+    persistSettings();
+  });
+  $("set-reset").addEventListener("click", async () => {
+    fontChoice = ""; bgColor = ""; textColor = "";
+    indentPref = "auto"; tabWidth = 4;
+    applySettings(); applyTabWidth(); persistSettings();
     if (setFont) setFont.value = "";
     if (setBg) setBg.value = cssVarHex("--paper", "#EDEBE4");
     if (setFg) setFg.value = cssVarHex("--ink", "#1A1D24");
+    if (setIndent) setIndent.value = indentPref;
+    if (setTabWidth) setTabWidth.value = String(tabWidth);
+    await refreshIndent();
   });
   $("set-close").addEventListener("click", closeSettings);
   settingsOverlay.addEventListener("mousedown", (ev) => { if (ev.target === settingsOverlay) closeSettings(); });
@@ -1625,11 +1771,14 @@
         if (typeof st.splitRatio === "number") splitRatio = Math.max(0.1, Math.min(0.9, st.splitRatio));
         if (st.view) currentView = st.view;
         if (typeof st.fontChoice === "string") fontChoice = st.fontChoice;
+        if (typeof st.indentPref === "string") indentPref = st.indentPref;
+        if (typeof st.tabWidth === "number") tabWidth = st.tabWidth;
         if (typeof st.bgColor === "string") bgColor = st.bgColor;
         if (typeof st.textColor === "string") textColor = st.textColor;
       }
     } catch (e) { log("loadInitialState failed: " + e); }
     applySettings();
+    applyTabWidth();
     // setView applies the divider ratio when the view is split; calling
     // applyRatio here unconditionally would re-set the inline flex that
     // setView just cleared, capping the editor at the split width even in
@@ -1646,11 +1795,17 @@
     try {
       const sf = await window.startupFile();
       if (sf && sf.path) {
-        await loadIntoEditor(sf.text || "", sf.title || "");
+        await loadIntoEditor(sf.text || "", sf.title || "", { view: sf.view });
         if (sf.created) log("new file " + sf.path);
+      } else if (sf && sf.view && sf.view !== currentView) {
+        // The file named on the command line could not be read. What is open is
+        // a blank document, so it belongs in the hand-picked view rather than
+        // the one that file was about to get.
+        setView(sf.view, false, true);
       }
     } catch (e) { log("startup file open failed: " + e); }
     await refreshNavState();
+    await refreshIndent();
     await resetHistory(editor.value);
     updateEmptyHint();
     editor.focus();
@@ -1667,8 +1822,29 @@
       editor.value = text;
       markDirty();
       updateEmptyHint();
+      await refreshIndent(text);
       await doRender();
       return true;
+    },
+    // What the toolbar button says, and what it does when a person clicks it.
+    indentState: function () {
+      return { pref: indentPref, kind: indentKind, width: tabWidth,
+               label: btnIndent ? btnIndent.textContent : "",
+               tabSize: getComputedStyle(editor).tabSize };
+    },
+    indentToggle: function () {
+      if (btnIndent) btnIndent.click();
+      return { kind: indentKind, label: btnIndent ? btnIndent.textContent : "" };
+    },
+    setIndentPref: async function (pref, width) {
+      if (setIndent) setIndent.value = pref;
+      indentPref = pref;
+      if (typeof width === "number") { tabWidth = width; applyTabWidth(); }
+      try {
+        await window.saveSettings(fontChoice, bgColor, textColor, indentPref, tabWidth);
+      } catch (e) {}
+      await refreshIndent();
+      return { pref: indentPref, kind: indentKind, width: tabWidth };
     },
     getPreviewHtml: function () { return reading.innerHTML; },
     // The fragment Nim returned, before the images in it were given their
@@ -1695,6 +1871,14 @@
     },
     setView: function (v) { setView(v, false); return app.getAttribute("data-view"); },
     getView: function () { return app.getAttribute("data-view"); },
+    // A view button pressed the way a person presses one, so the choice is
+    // recorded against the open document exactly as a real click records it.
+    pickView: async function (v) {
+      const b = document.querySelector('.viewmodes button[data-view="' + v + '"]');
+      if (b) b.click();
+      await new Promise((r) => setTimeout(r, 250)); // the write goes out async
+      return app.getAttribute("data-view");
+    },
     // Clicking a rendered link, the way a reader does, so the whole path
     // (delegated handler -> Nim -> editor) is what gets exercised.
     clickLink: async function (selectorIndex) {
@@ -1727,7 +1911,7 @@
     // Finish an openPath() the way the real callers do, so the title, history
     // arrows, and render all end up where they would in normal use.
     loadOpened: async function (res) {
-      await loadIntoEditor(res.text, res.title);
+      await loadIntoEditor(res.text, res.title, { view: res.view });
       applyNavState(res);
       return { title: baseTitle, text: editor.value };
     },

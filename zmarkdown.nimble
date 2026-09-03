@@ -30,4 +30,5 @@ task test, "Run the unit test suite":
   exec "nim c -r --hints:off tests/test_dialogs.nim"
   exec "nim c -r --hints:off tests/test_nav.nim"
   exec "nim c -r --hints:off tests/test_recent.nim"
+  exec "nim c -r --hints:off tests/test_indent.nim"
   exec "nim cpp -r --hints:off tests/test_markdown.nim"

@@ -508,6 +508,11 @@ type
     diskStamp: FileStamp   ## how that file looked when we last read or wrote it,
                            ## so a change made behind our back can be noticed
     ui: UiState            ## restored/persisted UI state
+    currentView: ViewMode  ## the view on screen right now. Not the same thing as
+                           ## `ui.view`, which is the last view chosen by hand:
+                           ## opening a file switches to the view that file was
+                           ## last read in, and that must not become the
+                           ## fallback a document with no view of its own gets.
     startupFile: string    ## file to open on launch (from the command line), "" if none
     nav: NavHistory        ## the documents opened this run, for back and forward
     statePath: string      ## where persisted state lives; "" means the real
@@ -571,16 +576,41 @@ proc absolutized(path: string): string =
   try: absolutePath(normalizedPath(path))
   except CatchableError: path
 
-proc rememberRecent(path: string) =
-  ## Add a just-opened file to the recent list and write it out at once, merged
-  ## onto whatever is on disk: with two windows open, neither should lose the
-  ## other's files. Does nothing when the user has switched the tracking off.
+proc viewForFile(path: string): ViewMode =
+  ## Which view a document opens in.
+  ##
+  ## The view it was last read in, when that is remembered: a README you read in
+  ## Preview comes back in Preview, one you were editing comes back in Text. A
+  ## file nothing is remembered about opens in Preview - opening someone's
+  ## document is far more often reading it than writing it, and an empty one is
+  ## not a trap either, since the watermark over it says so and offers Text.
+  ## While the remembering is switched off nothing is known about any file, so
+  ## the fallback there is the view last chosen by hand, which is what every
+  ## file got before views were remembered at all.
+  ##
+  ## The list is re-read from disk first, because it is shared: the view you
+  ## left a file in in the other window is the view it should come back in here.
+  ## So is the hand-picked fallback, for the same reason - the newest choice is
+  ## the one on disk, whichever window made it.
+  let disk = loadState(appStatePath())
+  app.ui.recentFiles = disk.recentFiles
+  app.ui.recentEnabled = disk.recentEnabled
+  app.ui.view = disk.view
+  if not disk.recentEnabled: return app.ui.view
+  let known = recentView(disk.recentFiles, absolutized(path))
+  if known.isSome: known.get else: vmPreview
+
+proc rememberRecent(path: string; view: Option[ViewMode]) =
+  ## Add a just-opened file to the recent list, with the view it is being opened
+  ## in, and write it out at once, merged onto whatever is on disk: with two
+  ## windows open, neither should lose the other's files. Does nothing when the
+  ## user has switched the tracking off.
   if not app.ui.recentEnabled or path.len == 0: return
   let abs = absolutized(path)
-  if app.ui.recentFiles.len > 0 and app.ui.recentFiles[0] == abs:
-    return  # already the most recent; nothing would change
+  if app.ui.recentFiles.len > 0 and app.ui.recentFiles[0] == recentFile(abs, view):
+    return  # already the most recent, in the same view; nothing would change
   var disk = loadState(appStatePath())
-  disk.recentFiles = addRecent(disk.recentFiles, abs)
+  disk.recentFiles = addRecent(disk.recentFiles, abs, view)
   app.ui.recentFiles = disk.recentFiles
   if not saveState(disk, appStatePath()):
     vlog("could not save the recent files list: " & appStatePath())
@@ -597,7 +627,7 @@ proc setCurrentFile(path: string; remember = true) =
   app.diskStamp = fileStamp(path)
   # A path with no file behind it yet (`zmarkdown new-notes.md`) is not a file
   # anyone has opened, so it is remembered only once the first save creates it.
-  if remember and app.diskStamp.exists: rememberRecent(path)
+  if remember and app.diskStamp.exists: rememberRecent(path, some(app.currentView))
 
 proc setWindowTitle(name: string) =
   ## Put the open document's name in the window title, after the application's
@@ -693,7 +723,13 @@ proc jsImageData(id: string; req: JsonNode): string =
   $ %*{"uri": r.uri, "error": ""}
 
 proc jsApplyEdit(id: string; req: JsonNode): string =
-  ## applyEdit(kind, text, selStart, selEnd) -> {text, selStart, selEnd}
+  ## applyEdit(kind, text, selStart, selEnd, indentKind, tabWidth)
+  ##   -> {text, selStart, selEnd}
+  ##
+  ## `indentKind` and `tabWidth` matter only to Tab and Shift+Tab, and are what
+  ## the toolbar toggle and the settings have settled on for the open document.
+  ## The unit itself is built here rather than sent over, so the only things
+  ## that can ever be inserted are a tab and a run of spaces.
   # Indexing a short argument list raises IndexDefect, which `except
   # CatchableError` does not catch, so arity is checked before anything else.
   if req.len < 4:
@@ -705,6 +741,16 @@ proc jsApplyEdit(id: string; req: JsonNode): string =
       text = req[1].getStr()
       a = req[2].getInt()
       b = req[3].getInt()
+      # Missing or unrecognized means "whatever the settings say", so an older
+      # or confused caller still indents the way the user asked for.
+      indentKind =
+        if req.len > 4 and req[4].kind == JString:
+          let k = parseIndentKind(req[4].getStr())
+          if k.isSome: k.get else: resolveIndent(app.ui.indentPref, text)
+        else: resolveIndent(app.ui.indentPref, text)
+      width =
+        if req.len > 5 and req[5].kind == JInt: clampTabWidth(req[5].getInt())
+        else: clampTabWidth(app.ui.tabWidth)
     let r =
       case kind
       of "bold": applyBold(text, a, b)
@@ -712,6 +758,8 @@ proc jsApplyEdit(id: string; req: JsonNode): string =
       of "underline": applyUnderline(text, a, b)
       of "link": applyLink(text, a, b)
       of "image": applyImage(text, a, b)
+      of "indent": applyIndent(text, a, b, indentUnit(indentKind, width))
+      of "outdent": applyOutdent(text, a, b, width)
       else: EditResult(text: text, selStart: a, selEnd: b)
     result = $ editResultJson(r)
   except CatchableError as e:
@@ -842,8 +890,10 @@ when defined(linux):
 type
   Pref = enum
     ## A single persisted preference, so a write can carry exactly the one the
-    ## user changed.
-    pfView, pfRatio, pfFont, pfColors, pfRecent
+    ## user changed. `pfFileView` is the odd one out: it belongs to the open
+    ## document rather than to the application, and rides along on the same
+    ## write as `pfView` because one view switch settles both.
+    pfView, pfFileView, pfRatio, pfFont, pfColors, pfIndent, pfRecent
 
 var
   prefsPending: set[Pref]  ## changes deferred by the write throttle
@@ -869,11 +919,24 @@ proc persistPrefs(fields: set[Pref]) =
   lastPrefsWrite = epochTime()
   var disk = loadState(appStatePath())
   if pfView in fields: disk.view = app.ui.view
+  if pfFileView in fields and app.ui.recentEnabled and app.currentPath.len > 0:
+    # The view the open document has just been switched to becomes its own, so
+    # it comes back this way. The order of the list is left alone: changing view
+    # half way through reading something is not a reopening of it. A document
+    # that was never saved has nowhere to keep this, and one the user told the
+    # app to forget must not creep back in because a view button was clicked -
+    # noteRecentView adds nothing, it only updates what is already there.
+    disk.recentFiles = noteRecentView(disk.recentFiles,
+                                      absolutized(app.currentPath), app.currentView)
+    app.ui.recentFiles = disk.recentFiles
   if pfRatio in fields: disk.splitRatio = app.ui.splitRatio
   if pfFont in fields: disk.fontChoice = app.ui.fontChoice
   if pfColors in fields:
     disk.bgColor = app.ui.bgColor
     disk.textColor = app.ui.textColor
+  if pfIndent in fields:
+    disk.indentPref = app.ui.indentPref
+    disk.tabWidth = app.ui.tabWidth
   if pfRecent in fields: disk.recentEnabled = app.ui.recentEnabled
   if saveState(disk, appStatePath()):
     vlog("preferences saved: " & appStatePath())
@@ -911,7 +974,16 @@ proc persistNow() =
 
 proc jsLoadInitialState(id: string; req: JsonNode): string =
   ## loadInitialState() -> the restored UI state (view and split ratio matter to JS).
-  result = $ app.ui.toJson()
+  ##
+  ## `view` is the view the window should actually come up in, which for a launch
+  ## with a file named on the command line is that file's own view rather than
+  ## the last one chosen. Settling it here, before the first paint, is what keeps
+  ## the window from opening in one view and switching to another a moment later.
+  if app.startupFile.len > 0 and fileExists(app.startupFile):
+    app.currentView = viewForFile(app.startupFile)
+  var st = app.ui
+  st.view = app.currentView
+  result = $ st.toJson()
 
 proc jsStartupFile(id: string; req: JsonNode): string =
   ## startupFile() -> {path, text, title, created}. The file passed on the
@@ -932,66 +1004,117 @@ proc jsStartupFile(id: string; req: JsonNode): string =
     errorDialog("Open failed", "That path is a directory, not a file:\n" & path)
     return $ %*{"path": ""}
   if not fileExists(path):
+    # A name with no file behind it yet is a document being started, not one
+    # being opened: there is nothing to have a remembered view, and Preview of a
+    # blank page is no use to someone about to write. It gets the view the
+    # window already came up in.
     setCurrentFile(path)
     navRecord(path)
     logLine("new file " & path & " (written on the first save)")
-    return $ %*{"path": path, "text": "", "title": docName(), "created": true}
+    return $ %*{"path": path, "text": "", "title": docName(),
+                "created": true, "view": $app.currentView}
   let r = readTextFile(path)
   if not r.ok:
     logLine("open failed (" & path & "): " & r.error)
     errorDialog("Open failed", r.error)
-    return $ %*{"path": ""}
+    # What is left open is a blank document, not that file, so it must not keep
+    # the view loadInitialState resolved for a file that never loaded.
+    app.currentView = app.ui.view
+    return $ %*{"path": "", "view": $app.currentView}
+  # The view was settled by loadInitialState(), before the window was painted.
   setCurrentFile(path)
   navRecord(path)
   logLine("opened " & path)
-  $ %*{"path": path, "text": r.value, "title": docName(), "created": false}
+  $ %*{"path": path, "text": r.value, "title": docName(), "created": false,
+       "view": $app.currentView}
 
 proc jsPersistState(id: string; req: JsonNode): string =
-  ## persistState(view, ratio). Called whenever the user switches view or moves
-  ## the divider, and written out at once: the view a file opens in is whichever
-  ## the user last chose, and that has to survive a window being killed rather
-  ## than closed. Fire and forget.
+  ## persistState(view, ratio). Called when the user switches view by hand or
+  ## moves the divider, and written out at once: it has to survive a window being
+  ## killed rather than closed. Fire and forget.
+  ##
+  ## Two different things are recorded from one call. The view becomes the open
+  ## document's own, which is what makes that document come back this way; and it
+  ## becomes the last view chosen by hand, which is what everything with no view
+  ## of its own falls back to.
+  ##
+  ## Only a call that actually changes the view on screen counts as a choice.
+  ## This is called for the divider as well, which reports the view it is already
+  ## in on every release and every arrow key; reading those as choices would
+  ## quietly promote whatever view a file happened to be remembered in into the
+  ## fallback every blank document gets. For the same reason, applying a
+  ## remembered view when a file opens does not come through here at all: that is
+  ## the file's choice being honored, not a new one being made.
   var viewChanged = false
   var ratioChanged = false
   try:
     if req.len >= 2:
       let before = app.ui
-      case req[0].getStr()
-      of "text": app.ui.view = vmText
-      of "split": app.ui.view = vmSplit
-      of "preview": app.ui.view = vmPreview
-      else: discard
+      let v = parseViewMode(req[0].getStr())
+      if v.isSome and v.get != app.currentView:
+        app.currentView = v.get
+        app.ui.view = v.get
+        viewChanged = true
       app.ui.splitRatio = clampRatio(req[1].getFloat())
-      viewChanged = before.view != app.ui.view
       ratioChanged = before.splitRatio != app.ui.splitRatio
   except CatchableError:
     discard
   # Both are single deliberate acts - a click on a view button, a divider
   # released - so both go out immediately and are on disk even if the window is
-  # killed rather than closed.
+  # killed rather than closed. The file's own view rides along on the same write.
   var fields: set[Pref]
-  if viewChanged: fields.incl pfView
+  if viewChanged: fields = fields + {pfView, pfFileView}
   if ratioChanged: fields.incl pfRatio
   persistPrefs(fields)
   result = "true"
 
 proc jsSaveSettings(id: string; req: JsonNode): string =
-  ## saveSettings(fontChoice, bgColor, textColor). Written out as it changes, for
-  ## the same reason the view mode is - collapsed, since a color picker being
-  ## dragged reports every shade it passes through.
+  ## saveSettings(fontChoice, bgColor, textColor, indentPref, tabWidth). Written
+  ## out as it changes, for the same reason the view mode is - collapsed, since a
+  ## color picker being dragged reports every shade it passes through, and so
+  ## does a width box being stepped with the arrow keys.
   var fields: set[Pref]
   try:
     let before = app.ui
     if req.len >= 1 and req[0].kind == JString: app.ui.fontChoice = req[0].getStr()
     if req.len >= 2 and req[1].kind == JString: app.ui.bgColor = req[1].getStr()
     if req.len >= 3 and req[2].kind == JString: app.ui.textColor = req[2].getStr()
+    if req.len >= 4 and req[3].kind == JString:
+      let p = parseIndentPref(req[3].getStr())
+      if p.isSome: app.ui.indentPref = p.get
+    if req.len >= 5 and req[4].kind == JInt:
+      app.ui.tabWidth = clampTabWidth(req[4].getInt())
     if before.fontChoice != app.ui.fontChoice: fields.incl pfFont
     if before.bgColor != app.ui.bgColor or before.textColor != app.ui.textColor:
       fields.incl pfColors
+    if before.indentPref != app.ui.indentPref or before.tabWidth != app.ui.tabWidth:
+      fields.incl pfIndent
   except CatchableError:
     discard
   persistPrefsSoon(fields)
   result = "true"
+
+proc jsIndentState(id: string; req: JsonNode): string =
+  ## indentState(text, pref, width) -> {pref, kind, width}. What Tab should put
+  ## into this particular document: the preference in force, the style that
+  ## works out to once the document has been looked at, and how wide a level is.
+  ##
+  ## The document is scanned here rather than in the page so there is one
+  ## implementation of "what does this file indent with" - the one the unit
+  ## tests drive directly.
+  ##
+  ## The page passes its own copy of the preference rather than relying on the
+  ## one saved here, because a settings change writes and asks in the same
+  ## breath and the answer must not depend on which of the two lands first.
+  ## Anything missing or unrecognized falls back to what was saved.
+  let text = if req.len > 0 and req[0].kind == JString: req[0].getStr() else: ""
+  var pref = app.ui.indentPref
+  if req.len > 1 and req[1].kind == JString:
+    let p = parseIndentPref(req[1].getStr())
+    if p.isSome: pref = p.get
+  var width = clampTabWidth(app.ui.tabWidth)
+  if req.len > 2 and req[2].kind == JInt: width = clampTabWidth(req[2].getInt())
+  $ %*{"pref": $pref, "kind": $resolveIndent(pref, text), "width": width}
 
 # ---- Recent files ----------------------------------------------------------
 
@@ -1001,8 +1124,8 @@ proc recentJson(): JsonNode =
   ## tracking switched off, so nothing that was remembered before then shows up.
   var files = newJArray()
   if app.ui.recentEnabled:
-    for p in app.ui.recentFiles:
-      files.add(%*{"path": p, "name": recentName(p)})
+    for f in app.ui.recentFiles:
+      files.add(%*{"path": f.path, "name": recentName(f.path)})
   # storedCount counts what is remembered whether or not it is on show, so the
   # Clear button can tell "nothing to clear" from "hidden by the switch".
   %*{"enabled": app.ui.recentEnabled, "files": files,
@@ -1071,6 +1194,7 @@ proc doOpen(text: string): tuple[opened: bool, content, title: string] =
     logLine("open failed: " & r.error)
     errorDialog("Open failed", r.error)
     return (false, "", "")
+  app.currentView = viewForFile(path)
   setCurrentFile(path)
   navRecord(path)
   logLine("opened " & path)
@@ -1141,22 +1265,29 @@ proc jsMenuOpen(id: string; req: JsonNode): string =
   if not guardUnsaved(dirty, text):
     return $ %*{"opened": false}
   let r = doOpen(text)
-  var res = %*{"opened": r.opened, "text": r.content, "title": r.title}
+  var res = %*{"opened": r.opened, "text": r.content, "title": r.title,
+               "view": $app.currentView}
   for k, v in navJson(): res[k] = v
   $ res
 
 proc jsMenuNew(id: string; req: JsonNode): string =
-  ## menuNew(dirty, text) -> {ok, title}. Guards unsaved changes, then starts a
-  ## fresh empty document and forgets the current file path. The navigation
-  ## chain is left as it is: a blank document is not a place you can return to,
-  ## so back still means "the last file I was reading".
+  ## menuNew(dirty, text) -> {ok, title, view}. Guards unsaved changes, then
+  ## starts a fresh empty document and forgets the current file path. The
+  ## navigation chain is left as it is: a blank document is not a place you can
+  ## return to, so back still means "the last file I was reading".
+  ##
+  ## A blank document has no view of its own to come back in - and a preview of
+  ## nothing is no use to somebody who has just asked for something to write in -
+  ## so it opens in the view last chosen by hand. Without this it would inherit
+  ## whatever view the file before it was remembered in.
   let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
   let text = if req.len > 1: req[1].getStr() else: ""
   if not guardUnsaved(dirty, text):
     return $ %*{"ok": false}
   setCurrentFile("")
+  app.currentView = app.ui.view
   logLine("new document")
-  $ %*{"ok": true, "title": docName()}
+  $ %*{"ok": true, "title": docName(), "view": $app.currentView}
 
 proc spawnNewWindow(): tuple[ok: bool, error: string] =
   ## Start a second copy of the application, so something else can be read
@@ -1198,13 +1329,15 @@ proc openFileInto(path: string): tuple[opened: bool, text, title: string] =
     logLine("open failed (" & path & "): " & r.error)
     errorDialog("Open failed", r.error)
     return (false, "", "")
+  app.currentView = viewForFile(path)
   setCurrentFile(path)
   navRecord(path)
   logLine("opened " & path)
   (true, r.value, docName())
 
 proc openedJson(r: tuple[opened: bool, text, title: string]): JsonNode =
-  result = %*{"opened": r.opened, "text": r.text, "title": r.title}
+  result = %*{"opened": r.opened, "text": r.text, "title": r.title,
+              "view": $app.currentView}
   for k, v in navJson(): result[k] = v
 
 proc jsOpenPath(id: string; req: JsonNode): string =
@@ -1404,9 +1537,11 @@ proc navStep(dirty: bool; curText: string; forward: bool): string =
     errorDialog("Cannot go " & (if forward: "forward" else: "back"), r.error)
     return $ %*{"opened": false}
   if forward: app.nav.goForward() else: app.nav.goBack()
+  app.currentView = viewForFile(target)
   setCurrentFile(target, remember = false)
   logLine((if forward: "forward to " else: "back to ") & target)
-  var res = %*{"opened": true, "text": r.value, "title": docName()}
+  var res = %*{"opened": true, "text": r.value, "title": docName(),
+               "view": $app.currentView}
   for k, v in navJson(): res[k] = v
   $ res
 
@@ -1433,8 +1568,12 @@ proc jsLoadDropped(id: string; req: JsonNode): string =
   if not guardUnsaved(dirty, curText):
     return $ %*{"ok": false}
   setCurrentFile("")
+  # Content with no file behind it is a document being started, not one being
+  # opened, so it gets the hand-picked view for the same reason File > New does.
+  app.currentView = app.ui.view
   logLine("loaded dropped content" & (if name.len > 0: " (" & name & ")" else: ""))
-  $ %*{"ok": true, "title": (if name.len > 0: name else: "Untitled")}
+  $ %*{"ok": true, "title": (if name.len > 0: name else: "Untitled"),
+       "view": $app.currentView}
 
 proc jsReloadFile(id: string; req: JsonNode): string =
   ## reloadFile(dirty, text) -> {ok, text, title}. F5: read the open file from
@@ -1611,6 +1750,7 @@ proc bindAll(w: Webview) =
   discard w.bind("startupFile", jsStartupFile)
   discard w.bind("persistState", jsPersistState)
   discard w.bind("saveSettings", jsSaveSettings)
+  discard w.bind("indentState", jsIndentState)
   discard w.bind("menuOpen", jsMenuOpen)
   discard w.bind("menuNew", jsMenuNew)
   discard w.bind("newWindow", jsNewWindow)
@@ -1757,6 +1897,7 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   logLine("self-test: starting")
   verbose = true
   app.ui = defaultState()
+  app.currentView = app.ui.view
   # Persistence is exercised for real here (the recent files list is written the
   # moment a file is opened), so point it at a file of its own: a test run must
   # never touch the config of whoever is running it.
@@ -1795,6 +1936,12 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   try: removeFile(newPath)
   except CatchableError: discard
   app.startupFile = newPath
+
+  # A document nothing has ever opened, so the view it comes up in is the one an
+  # unfamiliar file gets rather than one it was remembered with.
+  let viewPath = getTempDir() / "zmarkdown-selftest-view.md"
+  try: writeFile(viewPath, "# View memory\n\nbody\n")
+  except CatchableError: discard
 
   # A pair of documents that link to each other, for following a link in the
   # preview and then walking back along the chain of what was opened.
@@ -1919,6 +2066,9 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
         if st{"text"}.getStr().len != 0:
           failures.add("launching with a nonexistent file did not start empty (got '" &
             st{"text"}.getStr() & "')")
+        if st{"view"}.getStr() != "split":
+          failures.add("launching with a file that does not exist yet did not use the " &
+            "hand-picked view (got '" & st{"view"}.getStr() & "')")
         if st{"title"}.getStr() != extractFilename(newPath):
           failures.add("startup title: expected '" & extractFilename(newPath) &
             "', got '" & st{"title"}.getStr() & "'")
@@ -2026,6 +2176,122 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           failures.add("clearing left " & $rec{"afterClear"}.getInt() & " recent files behind")
         if not rec{"hiddenWhenOff"}.getBool():
           failures.add("the recent files list was still shown after tracking was switched off")
+      # The view each document opens in, and where that view is kept.
+      let vw = r{"views"}
+      if vw == nil or vw.kind != JObject or vw{"error"}.getStr().len > 0:
+        failures.add("view memory self-test did not report" &
+          (if vw != nil and vw{"error"}.getStr().len > 0:
+             ": " & vw{"error"}.getStr() else: ""))
+      else:
+        proc wantView(key, expect, what: string) =
+          let got = vw{key}.getStr()
+          if got != expect:
+            failures.add(what & ": expected " & expect & ", got '" & got & "'")
+        wantView("unknown", "preview",
+          "a file nothing was remembered about did not open in Preview")
+        wantView("pickedText", "text", "clicking the Text view button")
+        wantView("otherFile", "preview", "one file's view followed another file")
+        wantView("reopened", "text",
+          "a file did not reopen in the view it was left in")
+        wantView("navBack", "preview",
+          "walking back to a document did not reopen it in its own view")
+        wantView("handPick", "split", "clicking the Split view button")
+        wantView("trackingOff", "split",
+          "with the remembering switched off, a file did not get the hand-picked view")
+        wantView("trackingOn", "text",
+          "switching the remembering back on did not restore a file's own view")
+        wantView("newDoc", "split",
+          "File > New did not come up in the view last picked by hand")
+        wantView("findView", "text",
+          "opening a file with the find bar open ignored the file's own view")
+        if vw{"findCaret"}.getStr() != "0:0":
+          failures.add("opening a file with the find bar open left the caret on a " &
+            "match instead of the top of the document (at " &
+            vw{"findCaret"}.getStr() & ")")
+        # And it is on disk, against the file it belongs to, not global.
+        let saved = loadState(app.statePath)
+        if recentView(saved.recentFiles, viewPath) != some(vmText):
+          failures.add("the view a file was switched to was not written against it")
+        if recentView(saved.recentFiles, linkA) != some(vmPreview):
+          failures.add("a file opened in Preview was not remembered as Preview")
+        if recentView(saved.recentFiles, linkB) != some(vmSplit):
+          failures.add("the view picked by hand was not written against the open file")
+        # The hand-picked fallback is the last view actually chosen - never one a
+        # file was merely reopened in, and never one the divider reported back.
+        if saved.view != vmSplit:
+          failures.add("opening files in their own views moved the hand-picked view to " &
+            $saved.view)
+      # Tab types a tab rather than leaving the editor.
+      let tb = r{"tab"}
+      if tb == nil or tb.kind != JObject or tb{"error"}.getStr().len > 0:
+        failures.add("tab self-test did not report" &
+          (if tb != nil and tb{"error"}.getStr().len > 0:
+             ": " & tb{"error"}.getStr() else: ""))
+      else:
+        if not tb{"swallowed"}.getBool():
+          failures.add("Tab in the editor was left to move focus instead of typing")
+        if tb{"typed"}.getStr() != "a\tbc":
+          failures.add("Tab did not type a tab (got '" & tb{"typed"}.getStr() & "')")
+        if tb{"caret"}.getInt() != 2:
+          failures.add("the caret was not left after the typed tab (got " &
+            $tb{"caret"}.getInt() & ")")
+        if tb{"outdented"}.getStr() != "abc":
+          failures.add("Shift+Tab did not take the indentation off (got '" &
+            tb{"outdented"}.getStr() & "')")
+        if tb{"block"}.getStr() != "\ta\n\tb\n":
+          failures.add("Tab over a selected block did not indent every line (got '" &
+            tb{"block"}.getStr() & "')")
+        if not tb{"escapes"}.getBool():
+          failures.add("Escape then Tab did not give the editor's focus up")
+        if tb{"afterEscape"}.getStr() != "abc":
+          failures.add("Escape then Tab typed a tab instead of moving focus")
+      # Tabs or spaces: the setting, the auto-detection, and the toolbar toggle.
+      let ind = r{"indent"}
+      if ind == nil or ind.kind != JObject or ind{"error"}.getStr().len > 0:
+        failures.add("indentation self-test did not report" &
+          (if ind != nil and ind{"error"}.getStr().len > 0:
+             ": " & ind{"error"}.getStr() else: ""))
+      else:
+        proc wantInd(key, expect, what: string) =
+          let got = ind{key}.getStr()
+          if got != expect:
+            failures.add(what & ": expected '" & expect & "', got '" & got & "'")
+        wantInd("detectedSpace", "space",
+          "a spaces-indented document was not detected as spaces")
+        wantInd("spaceTyped", "    a\n    b\n",
+          "Tab did not put spaces into a spaces-indented document")
+        wantInd("detectedTab", "tab",
+          "a tab-indented document was not detected as tabs")
+        wantInd("label", "Tabs", "the toolbar button did not say what Tab puts in")
+        wantInd("flippedKind", "space", "the toolbar button did not switch to spaces")
+        wantInd("flippedLabel", "Spaces", "the toolbar button label after switching")
+        wantInd("prefAfterFlip", "auto",
+          "flipping the toolbar button changed the saved preference")
+        wantInd("flippedTyped", "    a\n\tb\n",
+          "Tab ignored the toolbar button and put in a tab anyway")
+        wantInd("afterReload", "tab",
+          "the toolbar flip outlived the document it was made for")
+        wantInd("forcedKind", "space",
+          "a document's own tabs overrode an explicit Spaces preference")
+        wantInd("tabSize", "2", "the editor did not draw a tab at the set width")
+        wantInd("widthTyped", "  a\n\tb\n",
+          "Tab did not put in as many spaces as the width asks for")
+        wantInd("widthOutdented", "a\n\tb\n",
+          "Shift+Tab did not take one level of spaces back off")
+        # And the settings themselves are on disk, at the values the run ended
+        # on rather than the defaults it would fall back to if nothing was
+        # written at all.
+        wantInd("savedPref", "space", "the preference the run ended on")
+        if ind{"savedWidth"}.getInt() != 3:
+          failures.add("the width the run ended on: expected 3, got " &
+            $ind{"savedWidth"}.getInt())
+        let savedInd = loadState(app.statePath)
+        if savedInd.indentPref != ipSpace:
+          failures.add("the indentation preference was not written to disk (got " &
+            $savedInd.indentPref & ")")
+        if savedInd.tabWidth != 3:
+          failures.add("the tab width was not written to disk (got " &
+            $savedInd.tabWidth & ")")
       # Find and replace, driven through the real bar.
       let f = r{"find"}
       if f == nil or f.kind != JObject:
@@ -2086,7 +2352,8 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
       try {
         // What launching with a file that does not exist yet left behind: an
         // empty document titled after the file. Read before anything types.
-        var startup = { text: window.__zm.getEditorValue(), title: window.__zm.getTitle() };
+        var startup = { text: window.__zm.getEditorValue(), title: window.__zm.getTitle(),
+                        view: window.__zm.getView() };
         var sample = "# Heading — dash\n\nThis is **bold** and <u>under</u> and `code`.\n\n- a\n- b\n";
         await window.__zm.setEditor(sample);
         var html = window.__zm.getPreviewHtml();
@@ -2302,10 +2569,161 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           var cleared = await window.recentClear();
           recent.afterClear = (cleared.files || []).length;
         } catch (e) { recent.error = String(e); }
-        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup, disk: disk, nav: nav, hint: hint, recent: recent });
+        // The view a document opens in: Preview for one nothing is remembered
+        // about, and its own view for one that has been read before. Runs after
+        // the recent list was cleared above, so both files start unfamiliar.
+        var views = {};
+        try {
+          // A file nothing is remembered about opens in Preview.
+          var ov = await window.openPath(false, "", window.__zmViewPath);
+          if (ov && ov.opened) await window.__zm.loadOpened(ov);
+          views.unknown = window.__zm.getView();
+          // Picking a view by hand is what records one against the open file.
+          views.pickedText = await window.__zm.pickView("text");
+          // Another file has its own view, not this one's.
+          var oa3 = await window.openPath(false, "", window.__zmLinkA);
+          if (oa3 && oa3.opened) await window.__zm.loadOpened(oa3);
+          views.otherFile = window.__zm.getView();
+          // And the first one comes back the way it was left.
+          var ov2 = await window.openPath(false, "", window.__zmViewPath);
+          if (ov2 && ov2.opened) await window.__zm.loadOpened(ov2);
+          views.reopened = window.__zm.getView();
+          // Walking back to a document reopens it in its own view too.
+          await window.__zm.navGo(false);
+          views.navBack = window.__zm.getView();
+          // A hand-picked view, made on a third file so the two above keep the
+          // views they were given.
+          var ob2 = await window.openPath(false, "", window.__zmLinkB);
+          if (ob2 && ob2.opened) await window.__zm.loadOpened(ob2);
+          views.handPick = await window.__zm.pickView("split");
+          // Opening a document with the find bar open must leave the caret at the
+          // top of it. The switch into that document's own view repaints the find
+          // bar, and that repaint must not drag the caret onto a match.
+          await window.__zm.findOpen(false);
+          await window.__zm.findQuery("o", false, false);
+          var ovf = await window.openPath(false, "", window.__zmViewPath);
+          if (ovf && ovf.opened) await window.__zm.loadOpened(ovf);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          var edFind = document.getElementById("editor");
+          views.findCaret = edFind.selectionStart + ":" + edFind.selectionEnd;
+          views.findView = window.__zm.getView();
+          window.__zm.findClose();
+          // With the remembering switched off, a file gets that hand-picked view
+          // rather than the one it is still remembered with.
+          await window.recentSetEnabled(false);
+          var ov3 = await window.openPath(false, "", window.__zmViewPath);
+          if (ov3 && ov3.opened) await window.__zm.loadOpened(ov3);
+          views.trackingOff = window.__zm.getView();
+          await window.recentSetEnabled(true);
+          // Switched back on, the file is remembered again - and reopening it in
+          // its own view, then moving the divider, must not turn that view into
+          // the hand-picked one. Nim checks the file on disk still says "split".
+          var ov4 = await window.openPath(false, "", window.__zmViewPath);
+          if (ov4 && ov4.opened) await window.__zm.loadOpened(ov4);
+          views.trackingOn = window.__zm.getView();
+          await window.persistState(window.__zm.getView(), 0.42); // a divider release
+          // File > New has no view of its own either, so it takes the hand pick.
+          var nw = await window.menuNew(false, "");
+          views.newDoc = nw && nw.view;
+        } catch (e) { views.error = String(e); }
+        // Tab types a tab in the editor instead of jumping out of it, and
+        // Shift+Tab takes a level of indentation back off. Driven as real key
+        // presses on the textarea, so the handler and the round trip are covered.
+        var tab = {};
+        try {
+          var edTab = document.getElementById("editor");
+          window.__zm.setView("text");
+          function pressTab(shift) {
+            return !edTab.dispatchEvent(new KeyboardEvent("keydown",
+              { key: "Tab", shiftKey: !!shift, bubbles: true, cancelable: true }));
+          }
+          await window.__zm.setEditor("abc");
+          edTab.setSelectionRange(1, 1);
+          tab.swallowed = pressTab(false);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          tab.typed = edTab.value;
+          tab.caret = edTab.selectionStart;
+          await window.__zm.setEditor("\tabc");
+          edTab.setSelectionRange(2, 2);
+          pressTab(true);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          tab.outdented = edTab.value;
+          await window.__zm.setEditor("a\nb\n");
+          edTab.setSelectionRange(0, 3);
+          pressTab(false);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          tab.block = edTab.value;
+          // Escape first is the way out for keyboard-only use: the very next
+          // Tab moves focus rather than typing.
+          await window.__zm.setEditor("abc");
+          edTab.setSelectionRange(1, 1);
+          edTab.dispatchEvent(new KeyboardEvent("keydown",
+            { key: "Escape", bubbles: true, cancelable: true }));
+          tab.escapes = !pressTab(false);
+          await new Promise(function (r) { setTimeout(r, 300); });
+          tab.afterEscape = edTab.value;
+        } catch (e) { tab.error = String(e); }
+        // What Tab puts in: the setting, what the document itself says, and the
+        // toolbar button that flips it for the document in front of you.
+        var ind = {};
+        try {
+          var edI = document.getElementById("editor");
+          window.__zm.setView("text");
+          function pressTabI(shift) {
+            return !edI.dispatchEvent(new KeyboardEvent("keydown",
+              { key: "Tab", shiftKey: !!shift, bubbles: true, cancelable: true }));
+          }
+          // Auto-detect: a document indented with spaces gets spaces.
+          await window.__zm.setIndentPref("auto", 4);
+          await window.__zm.setEditor("a\n    b\n");
+          ind.detectedSpace = window.__zm.indentState().kind;
+          edI.setSelectionRange(0, 0);
+          pressTabI(false);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          ind.spaceTyped = edI.value;
+          // ...and one indented with tabs gets tabs.
+          await window.__zm.setEditor("a\n\tb\n");
+          ind.detectedTab = window.__zm.indentState().kind;
+          ind.label = window.__zm.indentState().label;
+          // The toolbar button flips this document without touching the setting.
+          var flipped = window.__zm.indentToggle();
+          ind.flippedKind = flipped.kind;
+          ind.flippedLabel = flipped.label;
+          ind.prefAfterFlip = window.__zm.indentState().pref;
+          edI.setSelectionRange(0, 0);
+          pressTabI(false);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          ind.flippedTyped = edI.value;
+          // A flip lasts for this document only: the next one works it out again.
+          await window.__zm.setEditor("a\n\tb\n");
+          ind.afterReload = window.__zm.indentState().kind;
+          // An explicit preference ignores what the document uses, and the width
+          // is both what goes in and how wide a tab is drawn.
+          await window.__zm.setIndentPref("space", 2);
+          await window.__zm.setEditor("a\n\tb\n");
+          ind.forcedKind = window.__zm.indentState().kind;
+          ind.tabSize = String(window.__zm.indentState().tabSize);
+          edI.setSelectionRange(0, 0);
+          pressTabI(false);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          ind.widthTyped = edI.value;
+          // Shift+Tab takes that same level straight back off.
+          edI.setSelectionRange(2, 2);
+          pressTabI(true);
+          await new Promise(function (r) { setTimeout(r, 400); });
+          ind.widthOutdented = edI.value;
+          // Settings go to disk the moment they change, but a control being
+          // dragged is collapsed into one write; leave a gap so this one cannot
+          // be deferred past the check that reads the file back.
+          await new Promise(function (r) { setTimeout(r, 600); });
+          var kept = await window.__zm.setIndentPref("space", 3);
+          ind.savedPref = kept.pref;
+          ind.savedWidth = kept.width;
+        } catch (e) { ind.error = String(e); }
+        await window.selfTestReport({ html: html, view: view, editBold: ed.text, undoText: undoText, dropText: dropText, dropUri: dropUri, dropFile: dropFile, staleOk: staleOk, find: fr, img: img, startup: startup, disk: disk, nav: nav, hint: hint, recent: recent, views: views, tab: tab, indent: ind });
       } catch (err) {
         try { window.logMsg('driver error: ' + err); } catch (x) {}
-        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' }, disk: { error: 'driver aborted' }, nav: { error: 'driver aborted' }, hint: { error: 'driver aborted' }, recent: { error: 'driver aborted' } });
+        await window.selfTestReport({ html: '', view: '', editBold: '', undoText: '', dropText: '', dropUri: '', dropFile: '', staleOk: false, find: { error: 'driver aborted' }, img: { error: 'driver aborted' }, startup: { error: 'driver aborted' }, disk: { error: 'driver aborted' }, nav: { error: 'driver aborted' }, hint: { error: 'driver aborted' }, recent: { error: 'driver aborted' }, views: { error: 'driver aborted' }, tab: { error: 'driver aborted' }, indent: { error: 'driver aborted' } });
       }
     });
   })();
@@ -2313,7 +2731,8 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   let dropInit = "window.__zmDropPath = " & $(%dropPath) & ";" &
                  "window.__zmImgRel = " & $(%imgName) & ";" &
                  "window.__zmLinkA = " & $(%linkA) & ";" &
-                 "window.__zmLinkB = " & $(%linkB) & ";"
+                 "window.__zmLinkB = " & $(%linkB) & ";" &
+                 "window.__zmViewPath = " & $(%viewPath) & ";"
   discard w.init(dropInit.cstring)
   discard w.init(driver)
 
@@ -2416,6 +2835,7 @@ proc main() =
 
   # Normal launch: fresh empty document, restored UI state (never the old file).
   app.ui = loadState()
+  app.currentView = app.ui.view
   vlog("state loaded: view=" & $app.ui.view & " ratio=" & $app.ui.splitRatio)
 
   # Decide how WebKit should render BEFORE it is created. A fresh probe verdict

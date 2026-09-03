@@ -63,6 +63,15 @@
 
     <div class="tb-sep"></div>
 
+    <!-- What Tab puts in, for this document only. The width lives in Settings:
+         it is set once and forgotten, where this gets flipped per file. -->
+    <div class="tb-group" role="group" aria-label="Indentation">
+      <button id="btn-indent" class="indent-toggle" aria-pressed="false"
+              title="Tab inserts a tab (click for spaces)">Tabs</button>
+    </div>
+
+    <div class="tb-sep"></div>
+
     <div class="tb-group" role="group" aria-label="Find">
       <button class="icon" id="btn-find" title="Find (Ctrl+F)" aria-label="Find">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
@@ -190,13 +199,33 @@
       <div class="dlg-note">Applies to both the editor and the preview.</div>
       <div class="dlg-sep"></div>
       <div class="dlg-row">
+        <label for="set-indent">Tab key inserts</label>
+        <select id="set-indent">
+          <option value="auto">Auto-detect from the document</option>
+          <option value="tab">Tabs</option>
+          <option value="space">Spaces</option>
+        </select>
+      </div>
+      <div class="dlg-row">
+        <label for="set-tabwidth">Tab width</label>
+        <input type="number" id="set-tabwidth" min="1" max="16" step="1" value="4">
+      </div>
+      <div class="dlg-note">
+        Auto-detect uses tabs if the open document has any tab-indented line, and
+        spaces if it is indented with spaces. The width is how many spaces one
+        level is, and how wide a tab is drawn. The toolbar button switches the
+        current document without changing this.
+      </div>
+      <div class="dlg-sep"></div>
+      <div class="dlg-row">
         <label for="set-recent">Remember recently opened files</label>
         <input type="checkbox" id="set-recent" checked>
       </div>
       <div class="dlg-note">
-        Listed in the File menu. Turning this off stops new files being added and
-        hides the list; hover a file in the menu and press Delete to forget just
-        that one.
+        Listed in the File menu. Remembering them is also what lets a file reopen
+        in the view you last read it in. Turning this off stops new files being
+        added, hides the list, and stops views being remembered; hover a file in
+        the menu and press Delete to forget just that one.
       </div>
       <div class="dlg-row dlg-row-end">
         <button id="set-recent-clear" type="button">Clear recent files list</button>

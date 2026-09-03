@@ -1,6 +1,10 @@
 import std/unittest
 import std/[json, os, options]
 import "../src/core/state"
+import "../src/core/recent"
+
+func f(path: string): RecentFile = recentFile(path)
+func f(path: string, view: ViewMode): RecentFile = recentFile(path, some(view))
 
 suite "defaults":
   test "default state is sane":
@@ -41,19 +45,42 @@ suite "recent files in the persisted state":
   test "the list and the switch round trip":
     var s = defaultState()
     s.recentEnabled = false
-    s.recentFiles = @["/b.md", "/a.md"]
+    s.recentFiles = @[f"/b.md", f"/a.md"]
     let back = parseState(s.toJson())
     check not back.recentEnabled
-    check back.recentFiles == @["/b.md", "/a.md"]
+    check back.recentFiles == @[f"/b.md", f"/a.md"]
 
-  test "entries that are not strings are dropped rather than kept":
-    let s = parseState(parseJson("""{"recentFiles": ["/a.md", 7, null, "/b.md"]}"""))
-    check s.recentFiles == @["/a.md", "/b.md"]
+  test "the view each file was last read in round trips":
+    var s = defaultState()
+    s.recentFiles = @[f("/b.md", vmPreview), f("/a.md", vmText), f"/c.md"]
+    let back = parseState(s.toJson())
+    check back.recentFiles == s.recentFiles
+    # A file with no recorded view stays that way rather than gaining one.
+    check back.recentFiles[2].view.isNone
+
+  test "entries that are not paths are dropped rather than kept":
+    let s = parseState(parseJson(
+      """{"recentFiles": ["/a.md", 7, null, {"view": "text"}, {"path": 3},
+                          {"path": "/b.md"}]}"""))
+    check s.recentFiles == @[f"/a.md", f"/b.md"]
+
+  test "a view that is not a view mode is not guessed at":
+    let s = parseState(parseJson(
+      """{"recentFiles": [{"path": "/a.md", "view": "reading"},
+                          {"path": "/b.md", "view": 4}]}"""))
+    check s.recentFiles == @[f"/a.md", f"/b.md"]
+
+  test "a list written before views were remembered still loads":
+    # Bare path strings are what earlier versions wrote. They must keep working,
+    # and must not claim a view the user never chose.
+    let s = parseState(parseJson("""{"recentFiles": ["/a.md", "/b.md"]}"""))
+    check s.recentFiles == @[f"/a.md", f"/b.md"]
+    check s.recentFiles[0].view.isNone
 
   test "a stored list with duplicates or blanks is repaired on load":
     let s = parseState(parseJson(
       """{"recentFiles": ["/a.md", "", "/a.md", "/b.md"]}"""))
-    check s.recentFiles == @["/a.md", "/b.md"]
+    check s.recentFiles == @[f"/a.md", f"/b.md"]
 
   test "a wrong-typed recentFiles is ignored":
     check parseState(parseJson("""{"recentFiles": "nope"}""")).recentFiles.len == 0

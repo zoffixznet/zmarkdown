@@ -17,6 +17,7 @@ tests/test_images
 tests/test_dialogs
 tests/test_nav
 tests/test_recent
+tests/test_indent
 /src/ui/assets/icon-*.png
 /src/ui/assets/icon.ico
 # icon-128.png is embedded into the binary at compile time, so keep a copy in

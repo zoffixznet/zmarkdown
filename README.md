@@ -139,11 +139,47 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
 - **View modes.** Three toolbar buttons switch between **Text**, **Split**, and **Preview**.
   In Split, drag the divider all the way to either edge to give one pane the whole window;
   clicking any of the three buttons recenters the divider.
+- **Each file comes back the way you left it.** A file opens in the view you last had it
+  in: something you were reading in Preview reopens in Preview, something you were editing
+  in Text reopens in Text. The view is remembered per file, alongside the recent files
+  list, so it survives closing the app and is shared between open windows.
+
+  A file you have never opened has no view of its own, and opens in **Preview** — opening
+  a document is far more often reading it than writing it, and one that turns out to be
+  empty says so with a watermark that offers Text (see below) rather than looking like a
+  dead editor. That includes files you opened with an earlier version, which were
+  remembered by name but not by view: each picks its view up again the first time you
+  open it from here on. A document with no file behind it yet — a fresh Untitled one, or
+  a name you passed on the command line for a file that does not exist — opens in
+  whichever view you last picked by hand, since it is there to be written in.
+
+  Turning off "Remember recently opened files" in Settings turns this off with it: with
+  nothing remembered about any file, every file opens in the view you last picked.
 - **Formatting shortcuts** in the raw editor:
   - **Ctrl+B** bold, **Ctrl+I** italic, **Ctrl+U** underline. With text selected they wrap
     the selection; with nothing selected they insert the markers and put the caret between
     them.
+  - **Tab** indents rather than moving on to the next control. With several lines
+    selected it indents all of them; **Shift+Tab** takes one level back off — a tab, or
+    up to one level's worth of spaces — and leaves lines that are not indented alone.
+    Since Tab types, press **Esc** first if you want it to move focus out of the editor.
   - The link and image toolbar buttons insert sample markdown you can edit in place.
+- **Tabs or spaces.** The toolbar button between the formatting and find buttons says
+  what Tab puts in — **Tabs** or **Spaces** — and clicking it switches the document you
+  are looking at. It is for that document only: open another and the question is settled
+  again from scratch, so switching to spaces to fix somebody's file does not change how
+  you write your own.
+
+  What it is settled from is File > Settings. **Tab key inserts** is either **Tabs**,
+  **Spaces**, or **Auto-detect from the document**, which is the default: if the document
+  has any tab-indented line it gets tabs, and if it is indented with spaces it gets
+  spaces. A document with no indentation in it yet gets a tab. **Tab width** is how many
+  spaces one level is, and how wide a tab is drawn in the editor; it is 4 unless you
+  change it, and it has no toolbar button of its own because it is a thing you set once.
+
+  Shift+Tab does not care which mode you are in: it takes off a leading tab or a level of
+  leading spaces, whichever the line actually has, so a file that mixes them still comes
+  out one level at a time.
 - **Find and replace.** **Ctrl+F** opens the find bar (so does the magnifier button);
   **Ctrl+H** opens it with the replace row showing. Every match in the document is
   highlighted at once, with the one you are on picked out in the accent color, and the
@@ -195,8 +231,9 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   between runs.
 - **Recent files.** The File menu lists the files you opened most recently, newest first,
   by name, with the full path when you hover one; anything past the first ten sits behind
-  **More recent files**. Hovering a file and pressing **Delete** forgets that one. File >
-  Settings has a switch to stop tracking them altogether and a button to empty the list.
+  **More recent files**. Hovering a file and pressing **Delete** forgets that one — along
+  with the view it was last read in. File > Settings has a switch to stop tracking them
+  altogether and a button to empty the list.
 - **When a file changes underneath you.** Saving never quietly overwrites a file that
   something else has written since you opened it. If that has happened, ZMarkdown says so
   and offers three ways out: overwrite it with your version, save yours to a different file,
@@ -223,11 +260,13 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   like a web browser: a round marker follows the cursor and the pane scrolls by how far you
   move from the click point. Click again, press a key, or use the wheel to stop.
 - **Settings.** File > Settings sets the font, font color, and background color, applied to
-  both panes, and controls whether recently opened files are remembered. Your choices
-  persist between runs.
+  both panes, what the Tab key inserts and how wide a level of indentation is, and whether
+  recently opened files are remembered. Your choices persist between runs.
 - **An empty document in Preview.** A blank preview pane looks exactly like a blank editor,
   and typing into it goes nowhere. When the open document is empty and Preview is all that
-  is showing, a watermark says so; clicking it switches to Text.
+  is showing, a watermark says so; clicking it switches to Text. This is what makes opening
+  an unfamiliar file in Preview safe: an empty one tells you where the writing happens
+  instead of leaving you clicking at nothing.
 - **Virtual machines and machines without 3D acceleration** (Linux). At startup the app
   checks whether the display has working 3D acceleration. Where it does not — a VM without
   guest 3D is the common case — the preview engine is told to render on the CPU instead of
@@ -248,20 +287,24 @@ The app remembers a little state between runs, stored as JSON:
 
 It restores the window size and whether the window was maximized (the size is clamped to
 your current screen and never below a usable minimum), the view mode, the divider
-position, your File > Settings choices, the list of recently opened files, and the cached
-graphics verdict described under "Using it". It does not reopen your previous file: every
-launch starts with a fresh, empty document. The app follows your system light or dark
-preference automatically. If the state file is missing or unreadable, the app starts with
-sensible defaults; if the config directory cannot be written, it simply skips saving state.
+position, your File > Settings choices (fonts and colors, what Tab inserts and how wide a
+level is), the list of recently opened files with the view each was last read in, and the
+cached graphics verdict described under "Using it". It does
+not reopen your previous file: every launch starts with a fresh, empty document. The app
+follows your system light or dark preference automatically. If the state file is missing
+or unreadable, the app starts with sensible defaults; if the config directory cannot be
+written, it simply skips saving state.
 
 Preferences are written the moment you change them rather than only at exit, and each write
-is merged onto what is already in the file. So the view mode a new window opens in is
-whichever one you last picked, even with several windows open at once and whatever order
-you close them in.
+is merged onto what is already in the file. So the view a file opens in is the one you last
+read it in, and the view a new blank document opens in is the one you last picked, even
+with several windows open at once and whatever order you close them in.
 
 To keep no record of the files you open, turn off "Remember recently opened files" in
 File > Settings. That stops new files being added and hides the list; the button beside it
-empties what was remembered before.
+empties what was remembered before. It also stops the view each file was read in being
+remembered, since that is kept with the list: every file then opens in the view you last
+picked by hand.
 
 ## Known limitations
 

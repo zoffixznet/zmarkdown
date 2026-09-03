@@ -170,6 +170,15 @@ button.icon svg { width: 16px; height: 16px; display: block; }
 }
 .viewmodes button.active:hover { background: var(--accent); }
 
+/* What Tab puts in, for the open document. Fixed width so the toolbar does not
+   shift as the label changes between the two words. */
+.indent-toggle {
+  min-width: 4.4rem;
+  border-color: var(--rule);
+  color: var(--ink-soft);
+}
+.indent-toggle[aria-pressed="true"] { color: var(--ink); }
+
 /* ---- File menu ---------------------------------------------------------- */
 
 .menu-wrap { position: relative; }
@@ -392,7 +401,7 @@ button.toggle { font-size: 0.8rem; font-weight: 600; }
   padding: 1.6rem clamp(1rem, 4vw, 2.4rem);
   margin: 0;
   border: none;
-  tab-size: 4;
+  tab-size: var(--tab-size, 4);
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -593,6 +602,11 @@ body.autoscrolling { user-select: none; -webkit-user-select: none; }
   font-family: var(--sans); font-size: 0.9rem; padding: 0.35rem 0.5rem;
   border: 1px solid var(--rule); border-radius: 6px;
   background: var(--paper); color: var(--ink); min-width: 13rem;
+}
+#settings-dialog input[type="number"] {
+  font-family: var(--sans); font-size: 0.9rem; padding: 0.35rem 0.5rem;
+  border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--paper); color: var(--ink); width: 4.5rem;
 }
 #settings-dialog input[type="color"] {
   width: 46px; height: 30px; padding: 0; cursor: pointer;

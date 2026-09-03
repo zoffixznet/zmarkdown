@@ -8,20 +8,23 @@
 import std/[json, os, options, math]
 
 import recent
+import viewmode
+import indent
+export viewmode
+export indent
 
 type
-  ViewMode* = enum
-    ## The three ways to look at a document.
-    vmText = "text"       ## raw editor only
-    vmSplit = "split"     ## editor left, preview right
-    vmPreview = "preview" ## rendered preview only
-
   UiState* = object
     ## Everything persisted between runs.
     width*: int           ## window width in pixels (the non-maximized size)
     height*: int          ## window height in pixels (the non-maximized size)
     maximized*: bool      ## whether the window was maximized at exit
-    view*: ViewMode       ## current view mode
+    view*: ViewMode       ## the view mode last chosen by hand. Files reopen in
+                          ## the view each was last read in (kept per file in
+                          ## `recentFiles`); this is the fallback for everything
+                          ## that has no view of its own - a document with no
+                          ## file behind it yet, and every file at all while the
+                          ## remembering is switched off.
     splitRatio*: float    ## divider position in split mode, 0.0 .. 1.0
     fontChoice*: string   ## settings: font key ("" = the built-in per-pane fonts)
     bgColor*: string      ## settings: background color hex ("" = theme default)
@@ -30,8 +33,13 @@ type
                           ## "gpu" (3D acceleration works), or "cpu" (render in
                           ## software; e.g. a VM without 3D). Kept fresh by a
                           ## background re-probe on every launch.
+    indentPref*: IndentPref ## settings: what Tab puts in - a tab, spaces, or
+                          ## whichever the open document already uses
+    tabWidth*: int        ## settings: how many spaces one level of indentation
+                          ## is, and how wide a tab is drawn
     recentEnabled*: bool  ## settings: whether opened files are remembered at all
-    recentFiles*: seq[string] ## absolute paths of recently opened files, newest first
+    recentFiles*: seq[RecentFile] ## recently opened files, newest first: an
+                          ## absolute path each, with the view it was last read in
 
 const
   # Sane minimums so a tiny saved size cannot make the window unusable.
@@ -56,6 +64,8 @@ func defaultState*(): UiState =
     bgColor: "",
     textColor: "",
     renderMode: "",
+    indentPref: DefaultIndentPref,
+    tabWidth: DefaultTabWidth,
     recentEnabled: true,
     recentFiles: @[],
   )
@@ -97,6 +107,7 @@ func normalized*(s: UiState): UiState =
   # here we only enforce the lower bound so a corrupt tiny value is repaired.
   if result.width < MinWidth: result.width = MinWidth
   if result.height < MinHeight: result.height = MinHeight
+  result.tabWidth = clampTabWidth(s.tabWidth)
   result.recentFiles = sanitizeRecent(s.recentFiles)
 
 proc configDir*(): string =
@@ -123,8 +134,13 @@ proc statePath*(): string =
 func toJson*(s: UiState): JsonNode =
   ## Serialize state to JSON.
   var recent = newJArray()
-  for p in s.recentFiles:
-    recent.add(%p)
+  for f in s.recentFiles:
+    # The view is written only when there is one to write, so an entry that
+    # nothing is known about stays visibly different from one that was read in
+    # Split - and reads back that way in a later run.
+    var entry = %*{"path": f.path}
+    if f.view.isSome: entry["view"] = %($f.view.get)
+    recent.add(entry)
   %*{
     "width": s.width,
     "height": s.height,
@@ -135,6 +151,8 @@ func toJson*(s: UiState): JsonNode =
     "bgColor": s.bgColor,
     "textColor": s.textColor,
     "renderMode": s.renderMode,
+    "indentPref": $s.indentPref,
+    "tabWidth": s.tabWidth,
     "recentEnabled": s.recentEnabled,
     "recentFiles": recent,
   }
@@ -161,21 +179,34 @@ func parseState*(node: JsonNode): UiState =
     # Only the known verdicts; anything else means "probe again".
     if node["renderMode"].getStr() in ["gpu", "cpu"]:
       result.renderMode = node["renderMode"].getStr()
+  if node.hasKey("indentPref") and node["indentPref"].kind == JString:
+    let p = parseIndentPref(node["indentPref"].getStr())
+    if p.isSome: result.indentPref = p.get # anything else keeps the default
+  if node.hasKey("tabWidth") and node["tabWidth"].kind == JInt:
+    result.tabWidth = node["tabWidth"].getInt()
   if node.hasKey("recentEnabled") and node["recentEnabled"].kind == JBool:
     result.recentEnabled = node["recentEnabled"].getBool()
   if node.hasKey("recentFiles") and node["recentFiles"].kind == JArray:
-    # Anything in there that is not a string is not a path, so it is dropped
+    # Anything in there that is not a path, or an object with one, is dropped
     # rather than allowed to poison the list.
-    var paths: seq[string]
+    var files: seq[RecentFile]
     for item in node["recentFiles"]:
-      if item.kind == JString: paths.add(item.getStr())
-    result.recentFiles = paths
+      case item.kind
+      of JString:
+        # Written before views were remembered per file: a bare path, and no
+        # claim about the view it was read in.
+        files.add recentFile(item.getStr())
+      of JObject:
+        if item.hasKey("path") and item["path"].kind == JString:
+          var view = none(ViewMode)
+          if item.hasKey("view") and item["view"].kind == JString:
+            view = parseViewMode(item["view"].getStr())
+          files.add recentFile(item["path"].getStr(), view)
+      else: discard
+    result.recentFiles = files
   if node.hasKey("view") and node["view"].kind == JString:
-    case node["view"].getStr()
-    of "text": result.view = vmText
-    of "split": result.view = vmSplit
-    of "preview": result.view = vmPreview
-    else: discard # keep default
+    let v = parseViewMode(node["view"].getStr())
+    if v.isSome: result.view = v.get # anything else keeps the default
   if node.hasKey("splitRatio") and node["splitRatio"].kind in {JFloat, JInt}:
     result.splitRatio = node["splitRatio"].getFloat()
   result = result.normalized()
