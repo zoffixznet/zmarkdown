@@ -144,17 +144,20 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   in Text reopens in Text. The view is remembered per file, alongside the recent files
   list, so it survives closing the app and is shared between open windows.
 
-  A file you have never opened has no view of its own, and opens in **Preview** — opening
-  a document is far more often reading it than writing it, and one that turns out to be
-  empty says so with a watermark that offers Text (see below) rather than looking like a
-  dead editor. That includes files you opened with an earlier version, which were
-  remembered by name but not by view: each picks its view up again the first time you
-  open it from here on. A document with no file behind it yet — a fresh Untitled one, or
-  a name you passed on the command line for a file that does not exist — opens in
-  whichever view you last picked by hand, since it is there to be written in.
+  A file you have never opened has no view of its own. One with something in it opens in
+  **Preview**, since opening a document is far more often reading it than writing it. One
+  with nothing in it opens in **Text**, ready to type into: there is nothing to preview,
+  and an empty file is nearly always one you just made in order to write in it. Files you
+  opened with an earlier version count as never opened, having been remembered by name but
+  not by view; each picks its view up again the first time you open it from here on.
 
-  Turning off "Remember recently opened files" in Settings turns this off with it: with
-  nothing remembered about any file, every file opens in the view you last picked.
+  The same goes for a document with no file behind it yet — starting the app with nothing
+  to open, **File > New**, or a name you passed on the command line for a file that does
+  not exist. All of them are empty, so all of them come up in Text.
+
+  Turning off "Remember recently opened files" in Settings turns the remembering off with
+  it: an empty document still opens in Text, and everything else opens in the view you
+  last picked by hand.
 - **Formatting shortcuts** in the raw editor:
   - **Ctrl+B** bold, **Ctrl+I** italic, **Ctrl+U** underline. With text selected they wrap
     the selection; with nothing selected they insert the markers and put the caret between
@@ -213,7 +216,7 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
 - **New window (Ctrl+Shift+N).** Starts a second copy of ZMarkdown with its own empty
   document, for reading something else without putting the current document away. The two
   windows are independent, and closing one leaves the other running. The window title names
-  the open document ("ZMarkdown - notes.md"), so a taskbar of them says which is which.
+  the open document, so a taskbar of them says which is which.
 - **Links in the preview.** Clicking a link does what the link means. `http://` and
   `https://` addresses (and `mailto:`) go to whatever your desktop opens them with. A link to
   another file — `[the guide](docs/guide.md)`, the kind a repository README is full of —
@@ -259,14 +262,22 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
 - **Middle-click autoscroll.** Middle-click in the rendered pane to start drag-to-scroll,
   like a web browser: a round marker follows the cursor and the pane scrolls by how far you
   move from the click point. Click again, press a key, or use the wheel to stop.
+- **Where the file is.** The title says the whole path, not just the file name —
+  "ZMarkdown - ~/dev/notes/plan.md" in the window title and the taskbar, and the same path
+  at the right-hand end of the toolbar. Two projects with a README each are told apart at
+  a glance, and a file you cannot remember saving is never a mystery. On Linux, paths under
+  your home directory are written with a `~`. When the toolbar is too narrow for the whole
+  path it is trimmed from the left, so the end of the path survives longest — a very narrow
+  window can still trim the file name itself, and hovering shows the path in full.
 - **Settings.** File > Settings sets the font, font color, and background color, applied to
   both panes, what the Tab key inserts and how wide a level of indentation is, and whether
   recently opened files are remembered. Your choices persist between runs.
 - **An empty document in Preview.** A blank preview pane looks exactly like a blank editor,
   and typing into it goes nowhere. When the open document is empty and Preview is all that
-  is showing, a watermark says so; clicking it switches to Text. This is what makes opening
-  an unfamiliar file in Preview safe: an empty one tells you where the writing happens
-  instead of leaving you clicking at nothing.
+  is showing, a watermark says so; clicking it switches to Text. An empty file opens in Text
+  to begin with, so you only see this after switching to Preview yourself, or on a document
+  you emptied — but when you do, it says where the writing happens instead of leaving you
+  clicking at nothing.
 - **Virtual machines and machines without 3D acceleration** (Linux). At startup the app
   checks whether the display has working 3D acceleration. Where it does not — a VM without
   guest 3D is the common case — the preview engine is told to render on the CPU instead of
@@ -297,14 +308,13 @@ written, it simply skips saving state.
 
 Preferences are written the moment you change them rather than only at exit, and each write
 is merged onto what is already in the file. So the view a file opens in is the one you last
-read it in, and the view a new blank document opens in is the one you last picked, even
-with several windows open at once and whatever order you close them in.
+read it in — the same file, in every window, whatever order you close them in.
 
 To keep no record of the files you open, turn off "Remember recently opened files" in
 File > Settings. That stops new files being added and hides the list; the button beside it
 empties what was remembered before. It also stops the view each file was read in being
-remembered, since that is kept with the list: every file then opens in the view you last
-picked by hand.
+remembered, since that is kept with the list: an empty document still opens in Text, and
+everything else opens in the view you last picked by hand.
 
 ## Known limitations
 

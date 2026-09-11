@@ -98,6 +98,12 @@ html, body {
   -webkit-user-select: none;
 }
 
+/* The controls keep their size whatever else is in the toolbar; the document
+   path is the one thing that gives way when the window runs out of room. */
+#toolbar > * { flex: 0 0 auto; }
+#toolbar > .tb-spacer { flex: 1 1 auto; }
+#toolbar > .doc-title { flex: 0 1 auto; }
+
 .tb-group {
   display: flex;
   align-items: center;
@@ -257,15 +263,38 @@ button.icon svg { width: 16px; height: 16px; display: block; }
 .submenu-wrap.open > .submenu { display: block; }
 
 .doc-title {
+  display: inline-flex;
+  align-items: baseline;
   font-size: 0.8rem;
   color: var(--ink-soft);
   margin-left: 0.4rem;
+  min-width: 0;
+  max-width: 52vw;
+  white-space: nowrap;
+}
+/* The path, trimmed from the left when the toolbar runs out of room: the folder
+   the file actually sits in, and the file's own name, are the last things to go.
+   `direction: rtl` is only there to move the ellipsis to the front; the bdi
+   inside keeps the path itself reading the way it is written. */
+.doc-title .path {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 40vw;
+  direction: rtl;
+  opacity: 0.75;
 }
-.doc-title .dirty { color: var(--accent); font-weight: 600; }
+/* The file's own name, picked out of the path around it. */
+.doc-title .name { color: var(--ink); font-weight: 500; }
+.doc-title .dirty {
+  color: var(--accent);
+  font-weight: 600;
+  flex: 0 0 auto;
+  /* The title is a flex container, where a plain space between two children is
+     not rendered at all; the gap has to be spelled out. */
+  margin-right: 0.3rem;
+}
 
 /* ---- Find / replace bar ------------------------------------------------- */
 

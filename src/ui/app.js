@@ -325,8 +325,21 @@
   let baseTitle = "Untitled";
 
   function paintTitle() {
+    // The whole path is on show, split so the file's own name can never be the
+    // part that gets truncated away: the folders shrink, the name does not.
+    const cut = Math.max(baseTitle.lastIndexOf("/"), baseTitle.lastIndexOf("\\"));
+    const dir = cut > 0 ? baseTitle.slice(0, cut + 1) : "";
+    const name = cut > 0 ? baseTitle.slice(cut + 1) : baseTitle;
+    // One run of text, trimmed from the left when the toolbar runs out of room,
+    // so what survives longest is the end of the path: the folder the file is in
+    // and then its name. A narrow window can still eat into the name itself -
+    // the whole path is on the window title and under the pointer either way.
+    // The bdi keeps the path reading left to right inside a box whose direction
+    // is flipped purely to move the ellipsis to the front.
     docTitle.innerHTML =
-      (dirty ? '<span class="dirty">&#9679;</span> ' : "") + escapeHtml(baseTitle);
+      (dirty ? '<span class="dirty">&#9679;</span>' : "") +
+      '<span class="path"><bdi>' + escapeHtml(dir) +
+      '<span class="name">' + escapeHtml(name) + "</span></bdi></span>";
     docTitle.title = baseTitle;
   }
 
@@ -1797,12 +1810,10 @@
       if (sf && sf.path) {
         await loadIntoEditor(sf.text || "", sf.title || "", { view: sf.view });
         if (sf.created) log("new file " + sf.path);
-      } else if (sf && sf.view && sf.view !== currentView) {
-        // The file named on the command line could not be read. What is open is
-        // a blank document, so it belongs in the hand-picked view rather than
-        // the one that file was about to get.
-        setView(sf.view, false, true);
       }
+      // Nothing to do when there is no startup file, or when the one named could
+      // not be read: the window already came up in the view an empty document
+      // gets, which is what is open in both cases.
     } catch (e) { log("startup file open failed: " + e); }
     await refreshNavState();
     await refreshIndent();

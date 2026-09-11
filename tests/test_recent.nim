@@ -120,3 +120,28 @@ suite "view mode names":
     check parseViewMode("").isNone
     check parseViewMode("Text").isNone
     check parseViewMode("reading").isNone
+
+suite "the view a document opens in":
+  test "a remembered view wins, whatever is in the document":
+    check openingView(some(vmPreview), blank = true, remembering = true,
+                      lastChosen = vmSplit) == vmPreview
+    check openingView(some(vmText), blank = false, remembering = true,
+                      lastChosen = vmSplit) == vmText
+
+  test "an empty document opens in Text, to be written in":
+    check openingView(none(ViewMode), blank = true, remembering = true,
+                      lastChosen = vmSplit) == vmText
+    # Emptiness is a property of the document, not of what is remembered, so
+    # this holds with the remembering switched off too.
+    check openingView(none(ViewMode), blank = true, remembering = false,
+                      lastChosen = vmSplit) == vmText
+
+  test "an unfamiliar document with something in it opens in Preview":
+    check openingView(none(ViewMode), blank = false, remembering = true,
+                      lastChosen = vmText) == vmPreview
+
+  test "with nothing remembered at all, the last hand pick decides":
+    check openingView(none(ViewMode), blank = false, remembering = false,
+                      lastChosen = vmText) == vmText
+    check openingView(none(ViewMode), blank = false, remembering = false,
+                      lastChosen = vmSplit) == vmSplit

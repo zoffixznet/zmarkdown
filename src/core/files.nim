@@ -2,7 +2,7 @@
 ## into a Result the caller can act on (show a dialog, keep the document), never
 ## an exception that takes down the app.
 
-import std/[os, times]
+import std/[os, times, strutils]
 
 type
   FileStamp* = object
@@ -77,3 +77,19 @@ func changed*(before, now: FileStamp): bool =
   if before.exists != now.exists:
     return true
   before.exists and (before.size != now.size or before.mtime != now.mtime)
+
+func shortenHome*(path, home: string): string =
+  ## A path written the way a person would write it: one under the home
+  ## directory becomes `~/...`, which is shorter and is how they think of it.
+  ## Anything else, and any path that merely starts with the same letters as the
+  ## home directory without being inside it, is left exactly as it is.
+  if path.len == 0 or home.len == 0: return path
+  # The home directory may or may not arrive with a trailing separator; compare
+  # against the form that cannot match a sibling directory by accident
+  # ("/home/zed" must not match "/home/zeddy/notes.md").
+  var h = home
+  while h.len > 1 and h[^1] in {'/', '\\'}: h.setLen(h.len - 1)
+  if h.len == 0 or path.len <= h.len: return path
+  if not path.startsWith(h): return path
+  if path[h.len] notin {'/', '\\'}: return path
+  "~/" & path[h.len + 1 .. ^1]

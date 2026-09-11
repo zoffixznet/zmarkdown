@@ -65,6 +65,24 @@ extern "C" void zmTrackWindow(void* win) {
   g_signal_connect(G_OBJECT(win), "window-state-event", G_CALLBACK(zm_on_state), NULL);
 }
 extern "C" void zmMaximizeWindow(void* win) { if (win) gtk_window_maximize(GTK_WINDOW(win)); }
+
+/* The second half of WM_CLASS, which is what a desktop entry's StartupWMClass is
+   matched against. GTK derives it from the program name, giving "Zmarkdown",
+   which does not match the "ZMarkdown" the desktop entry declares - so the
+   launch is never matched to the window that appears. Set before the window is
+   created, so it is the class the window is realized with. */
+extern "C" void zmSetProgramClass(const char* cls) {
+  gtk_init_check(NULL, NULL);
+  gdk_set_program_class(cls);
+}
+
+/* Ask the window manager to put this window in front of the person who started
+   it - on the desktop they are looking at, not wherever the window happened to
+   be placed. */
+extern "C" void zmPresentWindow(void* win) {
+  if (!win) return;
+  gtk_window_present(GTK_WINDOW(win));
+}
 extern "C" int zmGetWinW(void)   { return zmWinW; }
 extern "C" int zmGetWinH(void)   { return zmWinH; }
 extern "C" int zmGetWinMax(void) { return zmWinMax; }
@@ -279,6 +297,8 @@ extern "C" int zmWebKitAtLeast(int major, int minor) {
 
   proc zmTrackWindow(win: pointer) {.importc, nodecl.}
   proc zmMaximizeWindow(win: pointer) {.importc, nodecl.}
+  proc zmSetProgramClass(cls: cstring) {.importc, nodecl.}
+  proc zmPresentWindow(win: pointer) {.importc, nodecl.}
   proc zmGetWinW(): cint {.importc, nodecl.}
   proc zmGetWinH(): cint {.importc, nodecl.}
   proc zmGetWinMax(): cint {.importc, nodecl.}
@@ -514,6 +534,9 @@ type
                            ## last read in, and that must not become the
                            ## fallback a document with no view of its own gets.
     startupFile: string    ## file to open on launch (from the command line), "" if none
+    startupRead: bool      ## whether that file has been read yet
+    startupText: string    ## what it held, once read
+    startupError: string   ## why it could not be read, if it could not
     nav: NavHistory        ## the documents opened this run, for back and forward
     statePath: string      ## where persisted state lives; "" means the real
                            ## per-user config file. Only the self-test overrides
@@ -566,7 +589,26 @@ proc watchdogProc() {.thread.} =
   try: discard wdWebview.terminate() except CatchableError: discard
 
 proc docName(): string =
+  ## Just the file's own name. What a prompt about the open document says, where
+  ## the full path is either in the body of the message already or beside the
+  ## point.
   if app.currentPath.len > 0: extractFilename(app.currentPath) else: "Untitled"
+
+proc displayPath(path: string): string =
+  ## A path the way a person would write it: under the home directory it is
+  ## shortened to `~/...`, which is both shorter and how they think of it.
+  ## Not on Windows, where a tilde means nothing to anyone.
+  when defined(windows):
+    path
+  else:
+    shortenHome(path, getHomeDir())
+
+proc docLabel(): string =
+  ## What the window title and the toolbar say the open document is: its whole
+  ## path, not just its name. A name on its own is no help at all when two
+  ## projects both have a README and you need to know which one is in front of
+  ## you - or when you simply cannot remember where you left the file.
+  if app.currentPath.len > 0: displayPath(app.currentPath) else: "Untitled"
 
 proc absolutized(path: string): string =
   ## An absolute, tidied form of a path, for the lists that have to recognize
@@ -576,17 +618,10 @@ proc absolutized(path: string): string =
   try: absolutePath(normalizedPath(path))
   except CatchableError: path
 
-proc viewForFile(path: string): ViewMode =
-  ## Which view a document opens in.
-  ##
-  ## The view it was last read in, when that is remembered: a README you read in
-  ## Preview comes back in Preview, one you were editing comes back in Text. A
-  ## file nothing is remembered about opens in Preview - opening someone's
-  ## document is far more often reading it than writing it, and an empty one is
-  ## not a trap either, since the watermark over it says so and offers Text.
-  ## While the remembering is switched off nothing is known about any file, so
-  ## the fallback there is the view last chosen by hand, which is what every
-  ## file got before views were remembered at all.
+proc viewForFile(path, text: string): ViewMode =
+  ## Which view a document opens in: see `openingView`, which is the rule
+  ## itself. This is where the two things it needs are fetched - what is
+  ## remembered about this file, and whether the file has anything in it.
   ##
   ## The list is re-read from disk first, because it is shared: the view you
   ## left a file in in the other window is the view it should come back in here.
@@ -596,9 +631,11 @@ proc viewForFile(path: string): ViewMode =
   app.ui.recentFiles = disk.recentFiles
   app.ui.recentEnabled = disk.recentEnabled
   app.ui.view = disk.view
-  if not disk.recentEnabled: return app.ui.view
-  let known = recentView(disk.recentFiles, absolutized(path))
-  if known.isSome: known.get else: vmPreview
+  let known =
+    if disk.recentEnabled: recentView(disk.recentFiles, absolutized(path))
+    else: none(ViewMode)
+  openingView(known, blank = text.isEmptyOrWhitespace(),
+              remembering = disk.recentEnabled, lastChosen = app.ui.view)
 
 proc rememberRecent(path: string; view: Option[ViewMode]) =
   ## Add a just-opened file to the recent list, with the view it is being opened
@@ -630,13 +667,14 @@ proc setCurrentFile(path: string; remember = true) =
   if remember and app.diskStamp.exists: rememberRecent(path, some(app.currentView))
 
 proc setWindowTitle(name: string) =
-  ## Put the open document's name in the window title, after the application's
-  ## own, so a taskbar full of ZMarkdown windows says which file each one holds.
+  ## Put the open document in the window title, after the application's own name,
+  ## so a taskbar full of ZMarkdown windows says which file each one holds - and
+  ## says where each file is, since the title carries the whole path.
   ## (It is also what stops a desktop from labelling them "ZMarkdown <2>",
   ## "ZMarkdown <3>": those numbers only appear because the titles were
   ## identical.)
   if app.w == nil: return
-  let shown = if name.len > 0: name else: docName()
+  let shown = if name.len > 0: name else: docLabel()
   try:
     app.w.title = "ZMarkdown - " & shown
   except CatchableError as e:
@@ -972,15 +1010,33 @@ proc persistNow() =
   else:
     logLine("could not save state (skipping persistence): " & appStatePath())
 
+proc readStartupFile(path: string) =
+  ## Read the file named on the command line, once. The view the window comes up
+  ## in and the text that lands in the editor both come out of this one read, so
+  ## they cannot disagree about a file that changed in between - and the file is
+  ## not read twice just to ask whether it is empty. The path is passed in
+  ## rather than read off `app`, which the caller clears as it goes.
+  if app.startupRead or path.len == 0: return
+  app.startupRead = true
+  let r = readTextFile(path)
+  if r.ok: app.startupText = r.value
+  else: app.startupError = r.error
+
 proc jsLoadInitialState(id: string; req: JsonNode): string =
   ## loadInitialState() -> the restored UI state (view and split ratio matter to JS).
   ##
-  ## `view` is the view the window should actually come up in, which for a launch
-  ## with a file named on the command line is that file's own view rather than
-  ## the last one chosen. Settling it here, before the first paint, is what keeps
-  ## the window from opening in one view and switching to another a moment later.
+  ## `view` is the view the window should actually come up in. Settling it here,
+  ## before the first paint, is what keeps the window from opening in one view
+  ## and switching to another a moment later.
+  ##
+  ## With no file to open - or a name with no file behind it, or one that will
+  ## not read - what comes up is an empty document, and an empty document is for
+  ## writing in, so it comes up in Text.
+  app.currentView = vmText
   if app.startupFile.len > 0 and fileExists(app.startupFile):
-    app.currentView = viewForFile(app.startupFile)
+    readStartupFile(app.startupFile)
+    if app.startupError.len == 0:
+      app.currentView = viewForFile(app.startupFile, app.startupText)
   var st = app.ui
   st.view = app.currentView
   result = $ st.toJson()
@@ -1005,28 +1061,27 @@ proc jsStartupFile(id: string; req: JsonNode): string =
     return $ %*{"path": ""}
   if not fileExists(path):
     # A name with no file behind it yet is a document being started, not one
-    # being opened: there is nothing to have a remembered view, and Preview of a
-    # blank page is no use to someone about to write. It gets the view the
-    # window already came up in.
+    # being opened: nothing is remembered about it and there is nothing to
+    # preview, so it comes up in Text, ready to be written in.
     setCurrentFile(path)
     navRecord(path)
     logLine("new file " & path & " (written on the first save)")
-    return $ %*{"path": path, "text": "", "title": docName(),
+    return $ %*{"path": path, "text": "", "title": docLabel(),
                 "created": true, "view": $app.currentView}
-  let r = readTextFile(path)
-  if not r.ok:
-    logLine("open failed (" & path & "): " & r.error)
-    errorDialog("Open failed", r.error)
-    # What is left open is a blank document, not that file, so it must not keep
-    # the view loadInitialState resolved for a file that never loaded.
-    app.currentView = app.ui.view
-    return $ %*{"path": "", "view": $app.currentView}
+  readStartupFile(path)
+  if app.startupError.len > 0:
+    logLine("open failed (" & path & "): " & app.startupError)
+    errorDialog("Open failed", app.startupError)
+    # No view to report: the read this failed on already happened inside
+    # loadInitialState, which is why the window came up in Text. What is left
+    # open is a blank document, which is where Text is right anyway.
+    return $ %*{"path": ""}
   # The view was settled by loadInitialState(), before the window was painted.
   setCurrentFile(path)
   navRecord(path)
   logLine("opened " & path)
-  $ %*{"path": path, "text": r.value, "title": docName(), "created": false,
-       "view": $app.currentView}
+  $ %*{"path": path, "text": app.startupText, "title": docLabel(),
+       "created": false, "view": $app.currentView}
 
 proc jsPersistState(id: string; req: JsonNode): string =
   ## persistState(view, ratio). Called when the user switches view by hand or
@@ -1194,11 +1249,11 @@ proc doOpen(text: string): tuple[opened: bool, content, title: string] =
     logLine("open failed: " & r.error)
     errorDialog("Open failed", r.error)
     return (false, "", "")
-  app.currentView = viewForFile(path)
+  app.currentView = viewForFile(path, r.value)
   setCurrentFile(path)
   navRecord(path)
   logLine("opened " & path)
-  (true, r.value, docName())
+  (true, r.value, docLabel())
 
 proc doSaveTo(path, text: string): bool =
   # The directory may not exist yet: a path named on the command line can point
@@ -1219,15 +1274,15 @@ proc doSaveTo(path, text: string): bool =
 proc doSaveAs(text: string): tuple[saved: bool, title: string] =
   let suggested = if app.currentPath.len > 0: extractFilename(app.currentPath) else: "untitled.md"
   let path = saveFileDialog("Save As", suggested)
-  if path.len == 0: return (false, docName())
-  (doSaveTo(path, text), docName())
+  if path.len == 0: return (false, docLabel())
+  (doSaveTo(path, text), docLabel())
 
 proc doSave(text: string): tuple[saved: bool, title: string] =
   ## Save to the current path, or fall through to Save As if there is none.
   if app.currentPath.len == 0:
     let path = saveFileDialog("Save As", "untitled.md")
-    if path.len == 0: return (false, docName())
-    return (doSaveTo(path, text), docName())
+    if path.len == 0: return (false, docLabel())
+    return (doSaveTo(path, text), docLabel())
   # Somebody else may have written to this file since we last read or wrote it.
   # Overwriting it without a word would throw their work away silently, so ask.
   if diskMovedOn():
@@ -1241,8 +1296,8 @@ proc doSave(text: string): tuple[saved: bool, title: string] =
       return doSaveAs(text)
     of ccCancel:
       logLine("save cancelled")
-      return (false, docName())
-  (doSaveTo(app.currentPath, text), docName())
+      return (false, docLabel())
+  (doSaveTo(app.currentPath, text), docLabel())
 
 proc guardUnsaved(dirty: bool, text: string): bool =
   ## When there are unsaved changes, prompt Save / Don't Save / Cancel. Returns
@@ -1276,18 +1331,20 @@ proc jsMenuNew(id: string; req: JsonNode): string =
   ## navigation chain is left as it is: a blank document is not a place you can
   ## return to, so back still means "the last file I was reading".
   ##
-  ## A blank document has no view of its own to come back in - and a preview of
-  ## nothing is no use to somebody who has just asked for something to write in -
-  ## so it opens in the view last chosen by hand. Without this it would inherit
-  ## whatever view the file before it was remembered in.
+  ## A blank document has nothing to preview and nothing remembered about it, and
+  ## somebody who has just asked for a new document is about to type into it, so
+  ## it opens in Text. Without this it would inherit whatever view the file
+  ## before it was remembered in.
   let dirty = req.len > 0 and req[0].kind == JBool and req[0].getBool()
   let text = if req.len > 1: req[1].getStr() else: ""
   if not guardUnsaved(dirty, text):
     return $ %*{"ok": false}
   setCurrentFile("")
-  app.currentView = app.ui.view
+  # Nothing to preview and nothing remembered, and somebody who asks for a new
+  # document is about to type into it.
+  app.currentView = vmText
   logLine("new document")
-  $ %*{"ok": true, "title": docName(), "view": $app.currentView}
+  $ %*{"ok": true, "title": docLabel(), "view": $app.currentView}
 
 proc spawnNewWindow(): tuple[ok: bool, error: string] =
   ## Start a second copy of the application, so something else can be read
@@ -1329,11 +1386,11 @@ proc openFileInto(path: string): tuple[opened: bool, text, title: string] =
     logLine("open failed (" & path & "): " & r.error)
     errorDialog("Open failed", r.error)
     return (false, "", "")
-  app.currentView = viewForFile(path)
+  app.currentView = viewForFile(path, r.value)
   setCurrentFile(path)
   navRecord(path)
   logLine("opened " & path)
-  (true, r.value, docName())
+  (true, r.value, docLabel())
 
 proc openedJson(r: tuple[opened: bool, text, title: string]): JsonNode =
   result = %*{"opened": r.opened, "text": r.text, "title": r.title,
@@ -1537,10 +1594,10 @@ proc navStep(dirty: bool; curText: string; forward: bool): string =
     errorDialog("Cannot go " & (if forward: "forward" else: "back"), r.error)
     return $ %*{"opened": false}
   if forward: app.nav.goForward() else: app.nav.goBack()
-  app.currentView = viewForFile(target)
+  app.currentView = viewForFile(target, r.value)
   setCurrentFile(target, remember = false)
   logLine((if forward: "forward to " else: "back to ") & target)
-  var res = %*{"opened": true, "text": r.value, "title": docName(),
+  var res = %*{"opened": true, "text": r.value, "title": docLabel(),
                "view": $app.currentView}
   for k, v in navJson(): res[k] = v
   $ res
@@ -1569,7 +1626,9 @@ proc jsLoadDropped(id: string; req: JsonNode): string =
     return $ %*{"ok": false}
   setCurrentFile("")
   # Content with no file behind it is a document being started, not one being
-  # opened, so it gets the hand-picked view for the same reason File > New does.
+  # opened, and nothing is remembered about it. It has text in it, though, so
+  # unlike File > New there is something to read: it gets the view last chosen by
+  # hand rather than being forced into Text.
   app.currentView = app.ui.view
   logLine("loaded dropped content" & (if name.len > 0: " (" & name & ")" else: ""))
   $ %*{"ok": true, "title": (if name.len > 0: name else: "Untitled"),
@@ -1628,7 +1687,7 @@ proc jsReloadFile(id: string; req: JsonNode): string =
     return $ %*{"ok": false}
   app.diskStamp = fileStamp(app.currentPath)
   logLine("refreshed " & app.currentPath)
-  $ %*{"ok": true, "text": r.value, "title": docName()}
+  $ %*{"ok": true, "text": r.value, "title": docLabel()}
 
 proc jsMenuSave(id: string; req: JsonNode): string =
   let text = if req.len > 0: req[0].getStr() else: ""
@@ -1815,6 +1874,13 @@ when defined(linux):
       vlog("native drop failed: " & e.msg)
 
 proc setupWindow(debug: bool): Webview =
+  when defined(linux):
+    # Before the window exists, so it is realized with this class. The desktop
+    # entry declares StartupWMClass=ZMarkdown; without this GTK would name the
+    # class after the program file instead ("Zmarkdown"), the two would not
+    # match, and the desktop could not tie the window that appears back to the
+    # launch that asked for it - which is what tells it where to put the window.
+    zmSetProgramClass("ZMarkdown")
   let w = newWebview(debug = debug)
   if w == nil:
     logLine("fatal: could not create webview (is WebKitGTK/WebView2 available?)")
@@ -1840,6 +1906,14 @@ proc setupWindow(debug: bool): Webview =
     if app.ui.maximized and win != nil:
       zmMaximizeWindow(win)
       vlog("restoring maximized window")
+
+  when defined(linux):
+    # Now that the window is the size and shape it should be, ask for it to be
+    # put in front of whoever started it. Without this a window manager is free
+    # to leave it on whatever desktop it feels like, unraised - which is how a
+    # window ends up open on a desktop you are not looking at, and you never
+    # notice it started at all.
+    if win != nil: zmPresentWindow(win)
 
   bindAll(w)
   setDialogLogger(proc (m: string) {.gcsafe.} = logLine(m))
@@ -1941,6 +2015,12 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
   # unfamiliar file gets rather than one it was remembered with.
   let viewPath = getTempDir() / "zmarkdown-selftest-view.md"
   try: writeFile(viewPath, "# View memory\n\nbody\n")
+  except CatchableError: discard
+
+  # A file on disk with nothing in it: the case that has to come up ready to
+  # type into rather than showing a preview of nothing.
+  let emptyPath = getTempDir() / "zmarkdown-selftest-empty.md"
+  try: writeFile(emptyPath, "")
   except CatchableError: discard
 
   # A pair of documents that link to each other, for following a link in the
@@ -2066,11 +2146,11 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
         if st{"text"}.getStr().len != 0:
           failures.add("launching with a nonexistent file did not start empty (got '" &
             st{"text"}.getStr() & "')")
-        if st{"view"}.getStr() != "split":
-          failures.add("launching with a file that does not exist yet did not use the " &
-            "hand-picked view (got '" & st{"view"}.getStr() & "')")
-        if st{"title"}.getStr() != extractFilename(newPath):
-          failures.add("startup title: expected '" & extractFilename(newPath) &
+        if st{"view"}.getStr() != "text":
+          failures.add("launching with a file that does not exist yet did not come up " &
+            "in Text (got '" & st{"view"}.getStr() & "')")
+        if st{"title"}.getStr() != displayPath(newPath):
+          failures.add("startup title: expected '" & displayPath(newPath) &
             "', got '" & st{"title"}.getStr() & "'")
         if not st{"saved"}.getBool():
           failures.add("saving the new document reported failure")
@@ -2114,7 +2194,7 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           (if nav != nil and nav{"error"}.getStr().len > 0:
              ": " & nav{"error"}.getStr() else: ""))
       else:
-        if nav{"startTitle"}.getStr() != extractFilename(linkA):
+        if nav{"startTitle"}.getStr() != displayPath(linkA):
           failures.add("the linked-from document was not opened (title '" &
             nav{"startTitle"}.getStr() & "')")
         if nav{"startForward"}.getBool():
@@ -2187,6 +2267,13 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           let got = vw{key}.getStr()
           if got != expect:
             failures.add(what & ": expected " & expect & ", got '" & got & "'")
+        wantView("emptyFile", "text",
+          "a file with nothing in it did not come up in Text")
+        wantView("emptyPicked", "split", "clicking the Split view button")
+        wantView("emptyRemembered", "split",
+          "an empty file did not reopen in the view it was left in")
+        wantView("emptyTrackingOff", "text",
+          "with the remembering switched off, an empty file did not come up in Text")
         wantView("unknown", "preview",
           "a file nothing was remembered about did not open in Preview")
         wantView("pickedText", "text", "clicking the Text view button")
@@ -2200,8 +2287,8 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           "with the remembering switched off, a file did not get the hand-picked view")
         wantView("trackingOn", "text",
           "switching the remembering back on did not restore a file's own view")
-        wantView("newDoc", "split",
-          "File > New did not come up in the view last picked by hand")
+        wantView("newDoc", "text",
+          "File > New did not come up in Text, ready to be written in")
         wantView("findView", "text",
           "opening a file with the find bar open ignored the file's own view")
         if vw{"findCaret"}.getStr() != "0:0":
@@ -2216,6 +2303,8 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           failures.add("a file opened in Preview was not remembered as Preview")
         if recentView(saved.recentFiles, linkB) != some(vmSplit):
           failures.add("the view picked by hand was not written against the open file")
+        if recentView(saved.recentFiles, emptyPath) != some(vmSplit):
+          failures.add("an empty file did not keep the view it was switched to")
         # The hand-picked fallback is the last view actually chosen - never one a
         # file was merely reopened in, and never one the divider reported back.
         if saved.view != vmSplit:
@@ -2574,6 +2663,23 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
         // the recent list was cleared above, so both files start unfamiliar.
         var views = {};
         try {
+          // A file with nothing in it has nothing to preview, and is nearly
+          // always one just made to be written in, so it comes up in Text.
+          var oe = await window.openPath(false, "", window.__zmEmptyPath);
+          if (oe && oe.opened) await window.__zm.loadOpened(oe);
+          views.emptyFile = window.__zm.getView();
+          // Unless we remember being in something else in it: what is
+          // remembered about a file beats what is in it.
+          views.emptyPicked = await window.__zm.pickView("split");
+          // Move the hand-picked view somewhere else first, on a different file,
+          // so reopening the empty one can only land on Split by remembering it:
+          // neither the hand pick nor the empty-document rule would say Split.
+          var ob0 = await window.openPath(false, "", window.__zmLinkB);
+          if (ob0 && ob0.opened) await window.__zm.loadOpened(ob0);
+          await window.__zm.pickView("text");
+          var oe2 = await window.openPath(false, "", window.__zmEmptyPath);
+          if (oe2 && oe2.opened) await window.__zm.loadOpened(oe2);
+          views.emptyRemembered = window.__zm.getView();
           // A file nothing is remembered about opens in Preview.
           var ov = await window.openPath(false, "", window.__zmViewPath);
           if (ov && ov.opened) await window.__zm.loadOpened(ov);
@@ -2614,6 +2720,11 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
           var ov3 = await window.openPath(false, "", window.__zmViewPath);
           if (ov3 && ov3.opened) await window.__zm.loadOpened(ov3);
           views.trackingOff = window.__zm.getView();
+          // An empty document is empty whether or not anything is remembered, so
+          // it still comes up in Text rather than taking the hand-picked view.
+          var oe3 = await window.openPath(false, "", window.__zmEmptyPath);
+          if (oe3 && oe3.opened) await window.__zm.loadOpened(oe3);
+          views.emptyTrackingOff = window.__zm.getView();
           await window.recentSetEnabled(true);
           // Switched back on, the file is remembered again - and reopening it in
           // its own view, then moving the divider, must not turn that view into
@@ -2732,7 +2843,8 @@ proc runSelfTest(forceCpu, forceGpu: bool): int =
                  "window.__zmImgRel = " & $(%imgName) & ";" &
                  "window.__zmLinkA = " & $(%linkA) & ";" &
                  "window.__zmLinkB = " & $(%linkB) & ";" &
-                 "window.__zmViewPath = " & $(%viewPath) & ";"
+                 "window.__zmViewPath = " & $(%viewPath) & ";" &
+                 "window.__zmEmptyPath = " & $(%emptyPath) & ";"
   discard w.init(dropInit.cstring)
   discard w.init(driver)
 

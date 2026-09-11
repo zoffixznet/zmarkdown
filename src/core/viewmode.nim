@@ -16,6 +16,25 @@ type
     vmSplit = "split"     ## editor left, preview right
     vmPreview = "preview" ## rendered preview only
 
+func openingView*(remembered: Option[ViewMode]; blank, remembering: bool;
+                  lastChosen: ViewMode): ViewMode =
+  ## Which view a document opens in.
+  ##
+  ## A document we remember comes back the way it was left, whatever is in it -
+  ## that is the whole point of remembering. Failing that, an empty document
+  ## opens in Text: there is nothing to preview, and a file with nothing in it
+  ## is nearly always one just created to be written in. A document with
+  ## something in it opens in Preview, because opening someone's file is far
+  ## more often reading it than editing it.
+  ##
+  ## `remembering` off means nothing is known about any file, so anything that
+  ## is not empty falls back to the view last chosen by hand - which is what
+  ## every file got before views were remembered at all.
+  if remembered.isSome: remembered.get
+  elif blank: vmText
+  elif not remembering: lastChosen
+  else: vmPreview
+
 func parseViewMode*(s: string): Option[ViewMode] =
   ## A view mode read back from its persisted name, or `none` for anything that
   ## is not one: a hand-edited state file, a value from some later version, a

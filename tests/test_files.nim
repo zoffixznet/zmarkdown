@@ -95,3 +95,24 @@ suite "noticing a file that changed underneath us":
 
   test "a directory does not count as the file":
     check not fileStamp(getTempDir()).exists
+
+suite "a path as a person would write it":
+  test "a path under the home directory is written with a tilde":
+    check shortenHome("/home/zed/notes.md", "/home/zed") == "~/notes.md"
+    check shortenHome("/home/zed/a/b.md", "/home/zed/") == "~/a/b.md"
+
+  test "a path outside the home directory is left alone":
+    check shortenHome("/etc/hosts", "/home/zed") == "/etc/hosts"
+    check shortenHome("/tmp/notes.md", "/home/zed/") == "/tmp/notes.md"
+
+  test "a sibling that merely starts the same way is not shortened":
+    # "/home/zed" must not swallow "/home/zeddy".
+    check shortenHome("/home/zeddy/notes.md", "/home/zed") ==
+      "/home/zeddy/notes.md"
+
+  test "the home directory itself is left as it is":
+    check shortenHome("/home/zed", "/home/zed") == "/home/zed"
+
+  test "nothing to shorten against changes nothing":
+    check shortenHome("/home/zed/x.md", "") == "/home/zed/x.md"
+    check shortenHome("", "/home/zed") == ""
