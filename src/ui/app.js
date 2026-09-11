@@ -1306,8 +1306,8 @@
           editor.value = "";
           setTitle(res.title, false);
           await doRender();
-          // A blank document has no view of its own; Nim hands back the one
-          // last picked by hand rather than leaving the previous file's.
+          // A blank document has no view of its own and nothing to preview, so
+          // Nim hands back Text rather than leaving the previous file's view on.
           if (res.view && res.view !== currentView) setView(res.view, false, true);
           await refreshIndent("");
           await resetHistory("");
