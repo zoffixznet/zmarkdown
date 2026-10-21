@@ -252,10 +252,19 @@ binary needs no PCRE package, no `libpcre.so.3`, and no `pcre64.dll` anywhere.
   An image that cannot be shown — no such file, or one too large to display (over 16 MB) —
   becomes a dashed placeholder that says which it was when you hover it, so a wrong path is
   visible rather than silent.
-- **Opening from the command line.** `zmarkdown notes.md` opens that file. A path that does
-  not exist yet is not an error: the editor starts empty under that name and writes the file
-  the first time you save, creating any missing folders along the way. So
-  `zmarkdown ideas/2026/plan.md` is as good a way to start a document as to open one.
+- **Opening from the command line.** `zmarkdown notes.md` opens that file. Several paths open
+  several windows: `zmarkdown one.md two.md three.md` puts each file in a window of its own,
+  all started together. A path that does not exist yet is not an error: the editor starts
+  empty under that name and writes the file the first time you save, creating any missing
+  folders along the way. So `zmarkdown ideas/2026/plan.md` is as good a way to start a
+  document as to open one. Put `--` before a path that begins with a dash.
+- **Quiet in the terminal.** Started from a shell, as in `zmarkdown notes.md &`, ZMarkdown
+  prints nothing to that terminal, then or later: not its own log of what it is doing, and
+  not the warnings the graphics and toolkit libraries underneath it like to emit. The one
+  exception is a launch that fails outright: a mistyped switch, a file that could not be
+  given a window, or no window at all is still reported, so you are never left looking at
+  nothing. To see everything, start it with `--debug-output`; `--verbose` adds more detail
+  and implies it. `zmarkdown --help` lists every switch.
 - **Drag and drop.** Drop a markdown file onto the window to open it. Setting ZMarkdown as
   the handler for markdown files also lets you open them by double-clicking in your file
   manager.

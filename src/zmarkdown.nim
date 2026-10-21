@@ -5,7 +5,7 @@
 ## transforms, markdown rendering, file IO, dialogs, state) is Nim, reached from
 ## the page through bound procs. The webview is only the display.
 
-import std/[json, os, times, strutils, base64, options, browsers, uri, sequtils]
+import std/[json, os, times, strutils, base64, options, browsers, sequtils]
 import std/atomics
 import std/osproc
 import std/streams
@@ -25,6 +25,7 @@ import core/search as srch
 import core/images as imgs
 import core/nav
 import core/recent
+import core/cli
 
 # Direct native calls for window geometry and the maximized state. On Linux we
 # track size and maximized live through GTK signals, so the values are captured
@@ -356,6 +357,85 @@ proc logLine(msg: string) =
 proc vlog(msg: string) =
   if verbose: logLine(msg)
 
+when defined(posix):
+  {.emit: """/*TYPESECTION*/
+#include <unistd.h>
+#include <fcntl.h>
+
+/* The terminal's own stderr, kept aside when the process silences itself, so
+   the few things worth saying even then (a wrong command line, no window at
+   all) still have somewhere to go. -1 until silenced. */
+static int zm_terminal_fd = -1;
+
+/* Point stdout and stderr at /dev/null for the rest of this process and for
+   every process it starts (they inherit the descriptors). The copy of stderr
+   kept aside is close-on-exec: ours alone, so no child gets a live terminal. */
+extern "C" void zmSilenceTerminal(void) {
+  int fd = open("/dev/null", O_WRONLY);
+  if (fd < 0) return;
+  if (zm_terminal_fd < 0) {
+    int saved = dup(2);
+    if (saved >= 0) {
+      fcntl(saved, F_SETFD, FD_CLOEXEC);
+      zm_terminal_fd = saved;
+    }
+  }
+  dup2(fd, 1);
+  dup2(fd, 2);
+  if (fd > 2) close(fd);
+}
+
+/* Write to the terminal this process was started from: the kept-aside stderr
+   once silenced, plain stderr before that. */
+extern "C" void zmWriteTerminal(const char* s, int len) {
+  int fd = zm_terminal_fd >= 0 ? zm_terminal_fd : 2;
+  while (len > 0) {
+    ssize_t n = write(fd, s, (size_t)len);
+    if (n <= 0) return;
+    s += n;
+    len -= (int)n;
+  }
+}
+""".}
+  proc zmSilenceTerminal() {.importc, nodecl.}
+  proc zmWriteTerminal(s: cstring; len: cint) {.importc, nodecl.}
+
+  proc writeTerminal(msg: string) {.gcsafe, nimcall.} =
+    ## Where the runtime's report of an unhandled exception goes once stderr is
+    ## silenced: a crash is exactly the thing somebody needs to see.
+    zmWriteTerminal(msg.cstring, msg.len.cint)
+
+var terminalSilenced = false
+
+proc silenceTerminal() =
+  ## Leave the terminal this was started from alone from here on: our own log
+  ## lines, the graphics stack's warnings, the dialog helpers' complaints, all
+  ## of it, from this process and from every window or helper it starts.
+  ## `zmarkdown notes.md &` is how people launch it, and a line on every save
+  ## in whatever they are doing next in that terminal is noise. The terminal is
+  ## not forgotten, though: tellTerminal still reaches it for the handful of
+  ## things that mean the launch did not work.
+  when defined(posix):
+    stdout.flushFile()
+    stderr.flushFile()
+    zmSilenceTerminal()
+    errorMessageWriter = writeTerminal
+    terminalSilenced = true
+  else:
+    discard  # a GUI executable on Windows has no console to begin with
+
+proc tellTerminal(msg: string) =
+  ## Say something even on a silenced run: the command line was wrong, or there
+  ## is not going to be a window. A launch that works never calls this. The
+  ## message goes into the log like everything else and, once the terminal has
+  ## been silenced, to the terminal as well, so nobody is left looking at
+  ## nothing.
+  logLine(msg)
+  when defined(posix):
+    if terminalSilenced:
+      let line = "zmarkdown: " & msg & "\n"
+      zmWriteTerminal(line.cstring, line.len.cint)
+
 # ---- Graphics mode (Linux) --------------------------------------------------
 #
 # WebKitGTK starts up trying to use GPU-accelerated rendering. On a display
@@ -552,9 +632,10 @@ proc appStatePath(): string =
 # ---- Processes this window starts -------------------------------------------
 
 var launchFlags: seq[string]
-  ## The command-line switches this run was started with that a second window
-  ## should inherit (the graphics override, the log level). The file argument is
-  ## deliberately not among them: a new window starts empty.
+  ## The command-line switches this run was started with that another window
+  ## should inherit (the graphics override, the log level, whether the terminal
+  ## hears anything). The file arguments are deliberately not among them: a new
+  ## window starts empty, and a sibling gets exactly one file of its own.
 
 var spawnedChildren: seq[Process]
   ## Handles for the processes this window started - other windows, and the
@@ -1346,11 +1427,13 @@ proc jsMenuNew(id: string; req: JsonNode): string =
   logLine("new document")
   $ %*{"ok": true, "title": docLabel(), "view": $app.currentView}
 
-proc spawnNewWindow(): tuple[ok: bool, error: string] =
-  ## Start a second copy of the application, so something else can be read
-  ## without putting the current document away. The child is detached and gets
-  ## this window's own streams, so closing this window leaves it running and its
-  ## log lines still go where the first one's went.
+proc spawnWindow(args: seq[string]; detach: bool): tuple[ok: bool, error: string] =
+  ## Start another copy of the application with the given command line. The
+  ## child gets this window's own streams, so its log lines go wherever this
+  ## one's go - the terminal, or nowhere - and it outlives this window either
+  ## way. `detach` puts it in a process group of its own, out of reach of the
+  ## terminal's Ctrl+C and hangup; without it the child stays in this process's
+  ## group and shares its fate at the terminal.
   var exe = ""
   try:
     exe = getAppFilename()
@@ -1358,12 +1441,19 @@ proc spawnNewWindow(): tuple[ok: bool, error: string] =
     return (false, "could not find the application's own program file: " & e.msg)
   reapSpawnedChildren()
   try:
-    let p = startProcess(exe, args = launchFlags,
-                         options = {poDaemon, poParentStreams})
+    let opts = if detach: {poDaemon, poParentStreams} else: {poParentStreams}
+    let p = startProcess(exe, args = args, options = opts)
     spawnedChildren.add(p)
     (true, "")
   except CatchableError as e:
     (false, e.msg)
+
+proc spawnNewWindow(): tuple[ok: bool, error: string] =
+  ## A second copy of the application with its own empty document, so something
+  ## else can be read without putting the current document away: the switches
+  ## this run was started with, and no file. Asked for from inside the app, it
+  ## belongs to no terminal job, so it is detached.
+  spawnWindow(launchFlags, detach = true)
 
 proc jsNewWindow(id: string; req: JsonNode): string =
   ## newWindow() -> {ok}. Ctrl+Shift+N: another instance of the app, with its own
@@ -1883,7 +1973,7 @@ proc setupWindow(debug: bool): Webview =
     zmSetProgramClass("ZMarkdown")
   let w = newWebview(debug = debug)
   if w == nil:
-    logLine("fatal: could not create webview (is WebKitGTK/WebView2 available?)")
+    tellTerminal("fatal: could not create webview (is WebKitGTK/WebView2 available?)")
     quit(1)
   app.w = w
   w.title = "ZMarkdown"
@@ -2883,11 +2973,16 @@ proc printVersion() =
 proc printHelp() =
   stdout.writeLine("""ZMarkdown - a small markdown editor and viewer
 
-Usage: zmarkdown [options] [file]
+Usage: zmarkdown [options] [file ...]
 
 Open a markdown file by passing its path (this is how the file manager opens it).
-A path that does not exist yet is fine: the editor starts empty under that name
-and the file is written the first time you save.
+Several paths open several windows, one per file. A path that does not exist
+yet is fine: the editor starts empty under that name and the file is written
+the first time you save. Put -- before a path that starts with a dash.
+
+Nothing is printed to the terminal unless one of the switches below asks for
+it, so `zmarkdown notes.md &` leaves your shell alone. A launch that fails
+outright - a mistyped switch, no window - is still reported there.
 
 Options:""")
   when defined(linux):
@@ -2896,43 +2991,66 @@ Options:""")
                  ZMARKDOWN_NO_GPU=1 in the environment does the same.
   --gpu          Force the default GPU rendering path, skipping the
                  automatic detection.""")
-  stdout.writeLine("""  --self-test    Run the headless end-to-end self-test and exit 0/1.
-  --verbose      Log more detail to stderr.
+  stdout.writeLine("""  --debug-output Keep the terminal attached: print the log of what the app
+                 does, and whatever its libraries have to say, to stderr.
+  --verbose      Log more detail (implies --debug-output).
+  --self-test    Run the headless end-to-end self-test and exit 0/1.
   --version      Print the version and exit.
   --help         Show this help and exit.""")
 
 proc main() =
-  var wantSelfTest = false
-  var wantProbeMode = false
-  var forceCpu = false
-  var forceGpu = false
-  var fileArg = ""
-  for i in 1 .. paramCount():
-    let arg = paramStr(i)
-    case arg
-    of "--self-test": wantSelfTest = true
-    of "--probe-gl": wantProbeMode = true  # internal: the isolated GL probe helper
-    of "--no-gpu": forceCpu = true; launchFlags.add(arg)
-    of "--gpu": forceGpu = true; launchFlags.add(arg)
-    of "--verbose", "-v": verbose = true; launchFlags.add("--verbose")
-    of "--version": printVersion(); return
-    of "--help", "-h": printHelp(); return
-    else:
-      if not arg.startsWith("-") and fileArg.len == 0:
-        fileArg = arg  # a file path (e.g. from the file manager)
-      else:
-        when defined(debug): verbose = true
-        logLine("ignoring unknown argument: " & arg)
-
+  let launch = parseLaunch(commandLineParams())
+  launchFlags = launch.inheritedFlags()
+  verbose = launch.verbose
   when defined(debug): verbose = true
+  var forceCpu = launch.forceCpu
+  let forceGpu = launch.forceGpu
 
-  if wantProbeMode:
+  if launch.showVersion:
+    printVersion()
+    return
+  if launch.showHelp:
+    printHelp()
+    return
+
+  if launch.probeGl:  # internal: the isolated GL probe helper
     when defined(linux):
       quit(runProbeMode())
     else:
       quit(0)
 
+  # `zmarkdown a.md b.md c.md`: every document after the first gets a window of
+  # its own, started now so they all come up together, and before the terminal
+  # is silenced, so each inherits it and can report a launch that fails in its
+  # own right. Each sibling is given this run's switches and its one file; this
+  # window takes the first file. They stay in this process's group, so one
+  # command line is one job: Ctrl+C or a closed terminal treats them all alike.
+  var opened: seq[string]
+  var unopened: seq[tuple[file, error: string]]
+  if launch.files.len > 1 and not launch.selfTest:
+    for extra in launch.files[1 .. ^1]:
+      let r = spawnWindow(launch.siblingArgs(extra), detach = false)
+      if r.ok:
+        opened.add(extra)
+      else:
+        unopened.add((extra, r.error))
+
+  # From here on a normal launch keeps quiet on the terminal it came from. Only
+  # the runs that exist to print (help, version, the self-test) or were asked
+  # to (--debug-output, --verbose, a debug build) keep the terminal attached.
+  # What went wrong with the command line itself is still said to the terminal
+  # (tellTerminal reaches it): a mistyped switch is exactly what the person who
+  # typed it needs to hear about.
+  if not launch.keepsTerminalOutput(debugBuild = defined(debug)):
+    silenceTerminal()
+
   logLine("ZMarkdown " & AppVersion & " starting")
+  for arg in launch.unknown:
+    tellTerminal("ignoring unknown argument: " & arg)
+  for extra in opened:
+    logLine("opened a window for " & extra)
+  for u in unopened:
+    tellTerminal("could not open a window for " & u.file & ": " & u.error)
   # The environment override applies only when no explicit flag was given: a
   # command-line --gpu/--no-gpu always beats a lingering exported variable.
   if not forceCpu and not forceGpu and
@@ -2942,8 +3060,15 @@ proc main() =
     if forceCpu or forceGpu:
       logLine("--no-gpu/--gpu have no effect on this platform")
 
-  if wantSelfTest:
+  if launch.selfTest:
     quit(runSelfTest(forceCpu, forceGpu))
+
+  # A file that could not be given a window is said so to the face, the way a
+  # failed Ctrl+Shift+N is, since a launch from a file manager has no terminal
+  # to have read it on.
+  if unopened.len > 0:
+    errorDialog("Some files did not open",
+      "A window could not be started for:\n" & unopened.mapIt(it.file).join("\n"))
 
   # Normal launch: fresh empty document, restored UI state (never the old file).
   app.ui = loadState()
@@ -2974,12 +3099,8 @@ proc main() =
   # A file given on the command line (e.g. opened from the file manager) is loaded
   # on launch. This is separate from the previously open file, which is never
   # reopened on its own.
-  if fileArg.len > 0:
-    var p = fileArg
-    if p.toLowerAscii().startsWith("file://"):
-      p = p[7 .. ^1]
-      try: p = decodeUrl(p, decodePlus = false)
-      except CatchableError: discard
+  if launch.files.len > 0:
+    let p = normalizeFilePath(launch.files[0])
     try: app.startupFile = absolutePath(p)
     except CatchableError: app.startupFile = p
     vlog("startup file: " & app.startupFile)
