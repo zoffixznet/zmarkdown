@@ -4,8 +4,10 @@
 #
 # Installs the GTK3 and WebKitGTK 4.1 development packages, a dialog helper
 # (zenity as a portable fallback; KDE already ships kdialog), and xvfb for the
-# headless test, then installs Nim via choosenim if it is missing, then the
-# pinned nimble dependencies. Uses sudo for the system packages.
+# headless test, then installs Nim via choosenim if no Nim is present. The Nim
+# libraries the app uses are vendored in the repository, so nimble is not needed
+# and nothing is fetched from a package registry. Uses sudo for the system
+# packages only.
 set -euo pipefail
 
 # System packages ZMarkdown needs, each with a one-line reason. This is the
@@ -61,26 +63,45 @@ else
 fi
 
 # Nim via choosenim (per-user, no sudo). The distro nim package is often too old.
-if ! command -v nim >/dev/null 2>&1; then
+#
+# choosenim installs into ~/.nimble/bin, so put that on PATH before looking for
+# nim: a shell that could not see an existing installation is what made earlier
+# versions of this script install Nim again.
+export PATH="$HOME/.nimble/bin:$PATH"
+
+if command -v nim >/dev/null 2>&1; then
+  # Whatever Nim is there is left alone; this script never upgrades or
+  # reinstalls an existing one.
+  echo "==> Nim already installed, leaving it alone: $(nim --version | head -1)"
+elif [ -x "$HOME/.nimble/bin/choosenim" ]; then
+  # choosenim is present but no toolchain is selected. Ask it for one directly
+  # rather than re-running the bootstrapper, which downloads choosenim again and
+  # can leave a second toolchain next to the first.
+  echo "==> choosenim is installed but no Nim is selected; installing stable Nim"
+  CHOOSENIM_NO_ANALYTICS=1 choosenim stable -y
+else
   echo "==> Installing Nim via choosenim"
   export CHOOSENIM_NO_ANALYTICS=1
   curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y
-  # choosenim installs into ~/.nimble/bin
-  export PATH="$HOME/.nimble/bin:$PATH"
-  if ! grep -q '.nimble/bin' "$HOME/.profile" 2>/dev/null; then
-    echo 'export PATH="$HOME/.nimble/bin:$PATH"' >> "$HOME/.profile"
-  fi
-else
-  echo "==> Nim already installed: $(nim --version | head -1)"
 fi
 
-export PATH="$HOME/.nimble/bin:$PATH"
+# Make ~/.nimble/bin visible to future shells. Login shells read ~/.profile, but
+# terminal emulators usually start non-login shells, which read ~/.bashrc and not
+# ~/.profile, so the line goes into both. A shell where nim is not found is what
+# made earlier versions of this script reinstall it.
+if [ -d "$HOME/.nimble/bin" ]; then
+  path_line='export PATH="$HOME/.nimble/bin:$PATH"'
+  if ! grep -q '.nimble/bin' "$HOME/.profile" 2>/dev/null; then
+    echo "$path_line" >> "$HOME/.profile"
+  fi
+  if [ -f "$HOME/.bashrc" ] && ! grep -q '.nimble/bin' "$HOME/.bashrc"; then
+    echo "$path_line" >> "$HOME/.bashrc"
+  fi
+fi
 
-echo "==> Installing pinned nimble dependencies"
-# The webview binding is vendored in the repo, so only these registry packages
-# are fetched. Versions are pinned to match the .nimble requirements.
-nimble install -y "markdown@0.8.8"
-nimble install -y "tinyfiledialogs@3.21.3"
+# Report, without removing anything, the copies of Nim that installers leave
+# behind; 'make nim-cleanup' removes them.
+bash "$(dirname "$0")/nim-cleanup.sh" --list
 
 echo "==> Done. Nim: $(nim --version | head -1)"
 echo "    You can now run: make build && make run"

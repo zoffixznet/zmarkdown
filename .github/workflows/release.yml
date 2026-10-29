@@ -43,11 +43,6 @@ jobs:
           nim-version: "2.2.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install nimble dependencies
-        run: |
-          nimble install -y "markdown@0.8.8"
-          nimble install -y "tinyfiledialogs@3.21.3"
-
       - name: Build
         run: make build
 
@@ -82,11 +77,6 @@ jobs:
         with:
           nim-version: "2.2.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install nimble dependencies
-        run: |
-          nimble install -y "markdown@0.8.8"
-          nimble install -y "tinyfiledialogs@3.21.3"
 
       - name: Fetch WebView2 SDK headers (not bundled in this repo)
         shell: pwsh

@@ -157,3 +157,35 @@ suite "heading anchors":
 
   test "an unclosed heading tag does not lose text":
     check addHeadingIds("<h1>no end").contains("no end")
+
+suite "html entities":
+  test "numeric character references decode to the character":
+    for (source, expected) in [
+      ("&#931;", "Σ"),        # decimal
+      ("&#0931;", "Σ"),       # leading zero
+      ("&#x3A3;", "Σ"),       # hex
+      ("&#X3a3;", "Σ"),       # hex, either case anywhere
+      ("&#63;", "?"),
+      ("A &#931; B", "A Σ B"),
+    ]:
+      check renderMarkdown(source).contains(expected)
+
+  test "named entities decode, and the ones html needs stay escaped":
+    check renderMarkdown("&Uuml;").contains("Ü")
+    check renderMarkdown("&amp;").contains("&amp;")
+
+  test "an unknown name is shown as written":
+    check renderMarkdown("&bogus;").contains("&amp;bogus;")
+
+  test "code points that are not characters become the replacement character":
+    check renderMarkdown("&#0;").contains("�")
+    check renderMarkdown("&#xD800;").contains("�")
+
+  test "out-of-range and malformed references are shown as written":
+    for (source, expected) in [
+      ("&#1114112;", "&amp;#1114112;"),  # one past U+10FFFF
+      ("&#;", "&amp;#;"),
+      ("&#x;", "&amp;#x;"),
+      ("&#12a;", "&amp;#12a;"),
+    ]:
+      check renderMarkdown(source).contains(expected)

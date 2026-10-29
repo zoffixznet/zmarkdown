@@ -4,8 +4,9 @@
 #   make deps   (once)   then   make run
 #
 # The Nim toolchain installs per-user via choosenim, so make sure ~/.nimble/bin
-# is on PATH (deps adds it to ~/.profile). We also prepend it here so a fresh
-# shell that has not sourced the profile still finds nim.
+# is on PATH (deps adds it to ~/.profile and ~/.bashrc). We also prepend it here
+# so a fresh shell that has not sourced either still finds nim. Every Nim library
+# the app uses is vendored under src/vendor, so nimble is never run.
 
 SHELL := /bin/bash
 export PATH := $(HOME)/.nimble/bin:$(PATH)
@@ -45,6 +46,11 @@ deps:
 	else \
 	  echo "Unsupported platform. On Windows run: powershell -ExecutionPolicy Bypass -File scripts/deps-windows.ps1"; \
 	fi
+
+## nim-cleanup: remove leftover copies of Nim (old toolchains, installer archives, nimble's own copies)
+.PHONY: nim-cleanup
+nim-cleanup:
+	bash scripts/nim-cleanup.sh
 
 ## icons: regenerate the PNG icons and the .ico from the SVG source
 .PHONY: icons

@@ -10,13 +10,12 @@ binDir        = "build"
 
 # Dependencies
 #
-# The webview binding is vendored under src/vendor/webview and PCRE is vendored
-# under src/vendor/pcre, so neither is listed here. These are the registry
-# packages, pinned.
+# Every library the app uses is vendored under src/vendor: the webview binding
+# (src/vendor/webview), nim-markdown (src/vendor/markdown), tinyfiledialogs
+# (src/vendor/tinyfiledialogs) and PCRE (src/vendor/pcre). Nothing is fetched from
+# the package registry, so the only requirement is the compiler itself.
 
 requires "nim >= 2.0.0"
-requires "markdown == 0.8.8"
-requires "tinyfiledialogs == 3.21.3"
 
 # Tasks
 

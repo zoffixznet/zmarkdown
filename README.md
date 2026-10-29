@@ -91,10 +91,22 @@ for your password. If they are all already present, it does not ask for sudo at 
 | `xvfb` | virtual display, used only by `make test` |
 | `ca-certificates`, `curl` | fetch the Nim toolchain over HTTPS |
 
-It then installs the Nim toolchain per-user via choosenim if it is missing (no sudo) and
-fetches the pinned Nim dependencies (`markdown`, `tinyfiledialogs`) into `~/.nimble`. On
-Windows, run the dependency bootstrap directly (per-user, no administrator rights needed;
-the Edge WebView2 runtime is already present on Windows 11):
+It then installs the Nim toolchain per-user via choosenim (no sudo), but only if no Nim is
+present: an existing Nim is never upgraded or reinstalled. The Nim libraries the app uses
+(webview, nim-markdown, tinyfiledialogs) and the PCRE regex library are all vendored in the
+repository under `src/vendor/`, so nimble is not used and nothing is fetched from a package
+registry at build time.
+
+Nim installers tend to leave copies of Nim behind, each over a hundred megabytes: an old
+toolchain after an upgrade under `~/.choosenim/toolchains`, the installer archive under
+`~/.choosenim/downloads`, and nimble's own copies of Nim under `~/.nimble/pkgs2`.
+`make nim-cleanup` lists them with their sizes and removes them once you confirm; the
+toolchain in use is never touched, and `make deps` reports them too without removing
+anything.
+
+On Windows, run the dependency bootstrap directly (per-user, no administrator rights
+needed; it installs Nim the same way, only if none is present, and the Edge WebView2
+runtime is already part of Windows 11):
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\deps-windows.ps1
@@ -501,7 +513,85 @@ comes under Microsoft's own license terms. It is not stored in this repository; 
 downloaded from Microsoft's official NuGet package at build time (see "The Microsoft
 WebView2 SDK is fetched, not bundled" above). The runtime it targets is part of Windows 11.
 
-### Statically linked into the prebuilt binaries
+### nim-markdown (Nim library, vendored under `src/vendor/markdown/`)
 
-- `markdown` (Nim package): MIT License.
-- `tinyfiledialogs` (Nim package and C library): zlib License.
+The markdown parser and HTML renderer, version 0.8.8, from
+[soasme/nim-markdown](https://github.com/soasme/nim-markdown). The copy carries one local
+change: its entity table no longer relies on the standard library's deprecated `htmlparser`
+module, and numeric character references such as `&#931;` are decoded locally instead.
+
+```
+MIT License
+
+Copyright (c) 2018-2021 Ju Lin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### tinyfiledialogs (C library and Nim wrapper, vendored under `src/vendor/tinyfiledialogs/`)
+
+The native open, save, and message dialogs. The C library, version 3.21.3, is by Guillaume
+Vareille and is under the zlib license; its notice, from the header of `tinyfiledialogs.c`:
+
+```
+Copyright (c) 2014 - 2025 Guillaume Vareille http://ysengrin.com
+
+- License -
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+1. The origin of this software must not be misrepresented; you must not
+claim that you wrote the original software.  If you use this software
+in a product, an acknowledgment in the product documentation would be
+appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+```
+
+The Nim wrapper around it is from
+[juancarlospaco/nim-tinyfiledialogs](https://github.com/juancarlospaco/nim-tinyfiledialogs),
+under the MIT License:
+
+```
+MIT License
+
+Copyright (c) 2018 Juan Carlos
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

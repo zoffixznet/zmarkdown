@@ -7,7 +7,7 @@
 ## but we also guard every call so a dialog failure logs and returns a safe
 ## default (treated as "cancel") rather than crashing.
 
-import pkg/tinyfiledialogs as tfd
+import ../vendor/tinyfiledialogs/tinyfiledialogs as tfd
 
 type
   SavePrompt* = enum

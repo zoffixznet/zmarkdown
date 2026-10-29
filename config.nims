@@ -15,12 +15,16 @@
 switch("nimcache", "nimcache/" & projectName())
 
 # Point Nim at the vendored webview binding so `import webview` resolves to our
-# patched copy rather than any nimble-installed one.
+# patched copy rather than any nimble-installed one. The other two vendored
+# libraries, nim-markdown (src/vendor/markdown) and tinyfiledialogs
+# (src/vendor/tinyfiledialogs), are imported by relative path from the modules
+# that use them, so they need no search-path entry here.
 switch("path", "src/vendor/webview")
 
-# The markdown renderer uses Nim's std/re, a wrapper around the legacy PCRE1
-# library. PCRE1 is end-of-life and modern distros no longer package it, so the
-# vendored PCRE 8.45 source (src/vendor/pcre) is built into a static library by
+# The markdown renderer, vendored under src/vendor/markdown, uses Nim's std/re,
+# a wrapper around the legacy PCRE1 library. PCRE1 is end-of-life and modern
+# distros no longer package it, so the vendored PCRE 8.45 source
+# (src/vendor/pcre) is built into a static library by
 # scripts/build-pcre.sh (make runs it automatically). When it is present, link
 # it in; the binary then needs no PCRE at runtime, on Linux or Windows.
 let staticPcre = thisDir() & "/build/pcre/libpcre.a"

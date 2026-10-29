@@ -1,8 +1,8 @@
-## Wrapper around the `markdown` nimble package. Returns the HTML fragment for a
-## markdown source, GitHub-flavored (tables and strikethrough enabled). Raw
-## inline HTML (for example the `<u>` emitted by the underline shortcut) passes
-## through untouched, which is what we want: the app renders the local user's own
-## document, so no sanitizer is added.
+## Wrapper around the vendored nim-markdown library (src/vendor/markdown).
+## Returns the HTML fragment for a markdown source, GitHub-flavored (tables and
+## strikethrough enabled). Raw inline HTML (for example the `<u>` emitted by the
+## underline shortcut) passes through untouched, which is what we want: the app
+## renders the local user's own document, so no sanitizer is added.
 ##
 ## Two things are added to the library's output: task list markers become
 ## read-only checkboxes, and every heading gets the `id` its own table of
@@ -13,7 +13,7 @@
 ## readable text instead of taking down the preview.
 
 import std/[strutils, tables, unicode]
-import pkg/markdown as md
+import ../vendor/markdown/markdown as md
 
 func taskBox(kind: string): string =
   ## A read-only checkbox for a task list item. The preview is read-only (editing
